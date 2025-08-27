@@ -48,3 +48,19 @@ def bfs_path(graph, start_id, goal_id):
         for neighbor, action, cost in graph.nodes[current].edges:
             queue.append((neighbor, path + [action]))
     return None
+
+def execute_path(agent, path):
+    for action in path:
+        if action.startswith("walk_left"):
+            duration = int(action.split("_")[2])
+            agent.move_left(duration)
+        elif action.startswith("walk_right"):
+            duration = int(action.split("_")[2])
+            agent.move_right(duration)
+        elif action.startswith("climb_rope"):
+            duration = int(action.split("_")[2])
+            agent.climb_rope(duration)
+        elif action == "drop_down":
+            agent.drop_down()
+        elif action == "cast_meteor":
+            agent.cast_skill("meteor")

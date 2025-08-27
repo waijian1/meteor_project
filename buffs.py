@@ -14,9 +14,9 @@ class Buff:
 class BuffManager:
     def __init__(self):
         self.buff = {
-            "magic_guard": Buff("Magic Guard", "d", 300),
-            "booster": Buff("Booster", "f", 300),
-            "maple_warrior": Buff("Maple Warrior", "g", 300),
+            "magic_guard": Buff("Magic Guard", "d", 580),
+            "booster": Buff("Booster", "j", 180),
+            "maple_warrior": Buff("Maple Warrior", "t", 580),
         }
 
     def refresh_buffs(self):

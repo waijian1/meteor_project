@@ -1,21 +1,7 @@
 from controls import MageControls
-from pathfinding import MapGraph, Node, bfs_path
+from pathfinding import MapGraph, Node, bfs_path, execute_path
 
-def execute_path(agent, path):
-    for action in path:
-        if action.startswith("walk_left"):
-            duration = int(action.split("_")[2])
-            agent.move_left(duration)
-        elif action.startswith("walk_right"):
-            duration = int(action.split("_")[2])
-            agent.move_right(duration)
-        elif action.startswith("climb_rope"):
-            duration = int(action.split("_")[2])
-            agent.climb_rope(duration)
-        elif action == "drop_down":
-            agent.drop_down()
-        elif action == "cast_meteor":
-            agent.cast_skill("meteor")
+
 
 
 if __name__ == "__main__":

@@ -1,0 +1,6 @@
+keyboard==0.13.5
+mss==10.1.0
+numpy==2.2.6
+opencv-python==4.12.0.88
+PyDirectInput @ file:///D:/bld/pydirectinput_1736150364895/work
+pywin32==311

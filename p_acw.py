@@ -87,6 +87,14 @@ class MinimapConfig:
     # Region of the minimap (relative to the game window client area)
     # (x, y, width, height). Tune these if detection fails.
     # Defaults work for a typical MapleLegends window with minimap at top-left.
+    
+    # Local
+    # x: int = 4
+    # y: int = 26
+    # w: int = 137
+    # h: int = 94
+
+    # Remote
     x: int = 4
     y: int = 26
     w: int = 137
@@ -95,7 +103,8 @@ class MinimapConfig:
 
 @dataclass
 class Config:
-    window_title: str = 'MapleLegends'
+    # window_title: str = 'MapleLegends'
+    window_title: str = '192.168'
     keys: Keys = field(default_factory=Keys)
     timers: Timers = field(default_factory=Timers)
     spawn: SpawnSync = field(default_factory=SpawnSync)

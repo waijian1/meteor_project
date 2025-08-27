@@ -132,7 +132,7 @@ class Config:
     cast_confirm_move_hold: float = 0.10    # how long to “test move” to detect lock
     cast_confirm_eps_x: float = 0.004       # if |Δx| < eps during lock window, treat as cast
     # --- Auto-focus config ---
-    auto_focus_enabled: bool = True
+    auto_focus_enabled: bool = False
     auto_focus_period: float = 0.25  # seconds between checks
 
 

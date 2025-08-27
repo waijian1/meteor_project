@@ -1,0 +1,68 @@
+{
+  "nodes": {
+    "plat_0": {
+      "type": "platform",
+      "x": 37,
+      "y": 3,
+      "span": [
+        1,
+        74
+      ]
+    },
+    "plat_1": {
+      "type": "platform",
+      "x": 88,
+      "y": 9,
+      "span": [
+        82,
+        94
+      ]
+    },
+    "plat_2": {
+      "type": "platform",
+      "x": 114,
+      "y": 25,
+      "span": [
+        0,
+        228
+      ]
+    },
+    "plat_3": {
+      "type": "platform",
+      "x": 207,
+      "y": 43,
+      "span": [
+        200,
+        215
+      ]
+    },
+    "plat_4": {
+      "type": "platform",
+      "x": 127,
+      "y": 49,
+      "span": [
+        121,
+        133
+      ]
+    },
+    "plat_5": {
+      "type": "platform",
+      "x": 114,
+      "y": 89,
+      "span": [
+        0,
+        229
+      ]
+    },
+    "plat_6": {
+      "type": "platform",
+      "x": 114,
+      "y": 140,
+      "span": [
+        0,
+        229
+      ]
+    }
+  },
+  "edges": []
+}

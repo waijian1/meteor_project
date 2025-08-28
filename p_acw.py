@@ -68,8 +68,8 @@ class Keys:
 
 @dataclass
 class Timers:
-    MW: float = 300.0
-    MG: float = 300.0
+    MW: float = 200.0
+    MG: float = 250.0
     SB: float = 100.0
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 
@@ -89,22 +89,22 @@ class MinimapConfig:
     # Defaults work for a typical MapleLegends window with minimap at top-left.
     
     # Local
-    # x: int = 4
-    # y: int = 26
-    # w: int = 137
-    # h: int = 94
-
-    # Remote
     x: int = 4
     y: int = 26
     w: int = 137
     h: int = 94
 
+    # Remote
+    # x: int = 4
+    # y: int = 26
+    # w: int = 137
+    # h: int = 94
+
 
 @dataclass
 class Config:
-    # window_title: str = 'MapleLegends'
-    window_title: str = '192.168'
+    window_title: str = 'MapleLegends'
+    # window_title: str = '192.168'
     keys: Keys = field(default_factory=Keys)
     timers: Timers = field(default_factory=Timers)
     spawn: SpawnSync = field(default_factory=SpawnSync)
@@ -127,13 +127,27 @@ class Config:
     pet_feed_jitter: float = 15.0 # add/subtract up to +/- jitter/2 each time
     pet_feed_start_delay: float = 118.9 # do NOT feed at program start; wait at least this long
     # --- Casting config ---
-    cast_retry_max: int = 2              # extra attempts after the first press (so 3 total)
+    cast_retry_max: int = 0              # extra attempts after the first press (so 3 total)
     cast_confirm_probe_delay: float = 0.09  # wait after key press before testing lock
     cast_confirm_move_hold: float = 0.10    # how long to “test move” to detect lock
     cast_confirm_eps_x: float = 0.004       # if |Δx| < eps during lock window, treat as cast
     # --- Auto-focus config ---
     auto_focus_enabled: bool = False
     auto_focus_period: float = 0.25  # seconds between checks
+    # Anti-knockback tuning
+    knock_stick_min_ms: int = 220   # keep holding dir this long after jump
+    knock_stick_max_ms: int = 320
+    knock_detect_dy: float = 0.010  # y must drop by this much to consider “climbing”
+    # anti-stuck on rope
+    stuck_secs: float = 5.0
+    unstick_hold_up_secs: float = 2.0
+    stuck_eps = 0.0015
+    stuck_watchdog_enabled = True
+    stuck_watchdog_period = 0.2
+    # Buff → Meteor settle timing
+    buff_chain_gap: float = 0.1          # small gap between multiple buff presses
+    buff_settle_min: float = 2         # wait after any buff before Meteor
+    buff_settle_max: float = 3
 
 
 CFG = Config()
@@ -381,8 +395,9 @@ class Controller:
 
     def cast_meteor(self):
         pdi.keyDown(self.k.METEOR)
-        time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
+        time.sleep(rand(0.50, 0.54))   # longer hold -> more reliable registration
         pdi.keyUp(self.k.METEOR)
+        press(self.k.METEOR, rand(0.05, 0.07))
 
     def teleport(self, direction: str, taps: int = 1):
         for _ in range(taps):
@@ -422,31 +437,60 @@ class Buffs:
     def tick(self, at_point: str):
         if at_point not in ('P1', 'P4'):
             return
+        did = False
+        now = time.time()
+        # if now >= self.next_mg:
+        #     sleep(rand(0.4,0.6))
+        #     pdi.keyDown(self.k.MG)
+        #     time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
+        #     pdi.keyUp(self.k.MG)
+        #     # pdi.press(self.k.MG, presses=int(rand(2,3)), interval=0); 
+        #     self.next_mg = now + self.t.MG - self.t.RECAST_MARGIN
+        #     sleep(rand(0.4,0.6))
+        # if now >= self.next_sb:
+        #     sleep(rand(00.4,0.6))
+        #     pdi.keyDown(self.k.SB)
+        #     time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
+        #     pdi.keyUp(self.k.SB)
+        #     # pdi.press(self.k.SB, presses=int(rand(2,3)), interval=0); 
+        #     self.next_sb = now + self.t.SB - self.t.RECAST_MARGIN
+        #     sleep(rand(0.4,0.6))
+        # if now >= self.next_mw:
+        #     sleep(rand(0.4,0.6))
+        #     pdi.keyDown(self.k.MW)
+        #     time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
+        #     pdi.keyUp(self.k.MW)
+        #     # pdi.press(self.k.MW, presses=int(rand(2,3)), interval=0); 
+        #     self.next_mw = now + self.t.MW - self.t.RECAST_MARGIN
+        #     sleep(rand(0.4,0.6))  
+
         now = time.time()
         if now >= self.next_mg:
-            sleep(rand(0.4,0.6))
             pdi.keyDown(self.k.MG)
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
             pdi.keyUp(self.k.MG)
-            # pdi.press(self.k.MG, presses=int(rand(2,3)), interval=0); 
             self.next_mg = now + self.t.MG - self.t.RECAST_MARGIN
-            sleep(rand(0.4,0.6))
+            did = True
+            time.sleep(CFG.buff_chain_gap)
+
+        now = time.time()
         if now >= self.next_sb:
-            sleep(rand(00.4,0.6))
             pdi.keyDown(self.k.SB)
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
             pdi.keyUp(self.k.SB)
-            # pdi.press(self.k.SB, presses=int(rand(2,3)), interval=0); 
             self.next_sb = now + self.t.SB - self.t.RECAST_MARGIN
-            sleep(rand(0.4,0.6))
+            did = True
+            # no need to sleep again here unless you notice collisions
+
         if now >= self.next_mw:
-            sleep(rand(0.4,0.6))
             pdi.keyDown(self.k.MW)
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
             pdi.keyUp(self.k.MW)
-            # pdi.press(self.k.MW, presses=int(rand(2,3)), interval=0); 
             self.next_mw = now + self.t.MW - self.t.RECAST_MARGIN
-            sleep(rand(0.4,0.6))
+            did = True
+            time.sleep(CFG.buff_chain_gap)
+
+        return did
 
 # ---------------------------- Pet Feeder -------------------------------------
 
@@ -483,6 +527,75 @@ class PetFeeder:
 # self.feeder.maybe_feed()
 # This guarantees no feeding at program start; first feed will be >= 120s later,
 # then randomized around every ~2 minutes.
+
+# ---------------------------- Stuck Watchdog ---------------------------------
+
+
+class StuckWatchdog:
+    """Global anti-stuck guard.
+    Every `CFG.stuck_secs`, if the minimap position hasn't changed by
+    more than `CFG.stuck_eps`, it presses and holds UP for
+    `CFG.unstick_hold_up_secs` to try to recover (e.g., dangling on rope).
+    """
+    def __init__(self, mm: 'MinimapTracker'):
+        self.mm = mm
+        self.last_xy: Optional[Tuple[float, float]] = None
+        self.last_move: float = time.time()
+        self.stop = False
+        self.t = threading.Thread(target=self._loop, daemon=True)
+        self.t.start()
+
+
+    def _hold_up(self, secs: float):
+        try:
+            VK_UP = 0x26; EXT = 0x0001; UPF = 0x0002
+            win32api.keybd_event(VK_UP, 0, EXT, 0)
+            time.sleep(secs)
+            win32api.keybd_event(VK_UP, 0, EXT | UPF, 0)
+        except Exception:
+            # fallback to pydirectinput
+            pdi.keyDown(CFG.keys.UP)
+            time.sleep(secs)
+            pdi.keyUp(CFG.keys.UP)
+
+
+    def _loop(self):
+        period = CFG.stuck_watchdog_period
+        eps = CFG.stuck_eps
+        while not self.stop:
+            try:
+                xy = self.mm.get_player_xy()
+                now = time.time()
+                if xy is not None:
+                    if self.last_xy is None:
+                        self.last_xy = xy; self.last_move = now
+                    else:
+                        dx = abs(xy[0] - self.last_xy[0])
+                        dy = abs(xy[1] - self.last_xy[1])
+                        if dx > eps or dy > eps:
+                            self.last_move = now
+                            self.last_xy = xy
+                        elif (now - self.last_move) >= CFG.stuck_secs:
+                            # no meaningful movement for stuck_secs → press/hold UP
+                            self._hold_up(CFG.unstick_hold_up_secs)
+                            # reset timer and sample again next cycle
+                            self.last_move = now
+                            self.last_xy = xy
+            except Exception:
+                pass
+            time.sleep(period)
+
+
+# Helper to start watchdog from your main()
+_stuck_guard: Optional[StuckWatchdog] = None
+
+
+def start_stuck_watchdog(mm: 'MinimapTracker'):
+    global _stuck_guard
+    if not CFG.stuck_watchdog_enabled:
+        return
+    if _stuck_guard is None:
+        _stuck_guard = StuckWatchdog(mm)
 
 # ---------------------------- Auto Focus -------------------------------------
 class AutoFocus:
@@ -526,6 +639,7 @@ class PetrisACW:
         self.buffs = Buffs(CFG.keys, CFG.timers)
         self.running = False
         self.feeder = PetFeeder(CFG.keys)
+        self.override_next: Optional[str] = None  # when set, main loop jumps to this P-point
 
     # ---- Movement primitives guided by minimap
     def _go_to_anchor_precise(self, anchor_x: float):
@@ -786,40 +900,51 @@ class PetrisACW:
         self._go_to_anchor_precise(anchor[0])
 
         # Try to latch from THIS spot only; don’t drift away
-        started = False
-        attempts = 6
-        while attempts > 0 and not started:
-            _arrow_down(toward)
-            press(CFG.keys.JUMP, 0.03)
-            _arrow_up(toward)
-            _arrow_down('up')  # hold UP and test for climb start
+        # started = False
+        # attempts = 6
+        # while attempts > 0 and not started:
+        #     _arrow_down(toward)
+        #     press(CFG.keys.JUMP, 0.03)
+        #     _arrow_up(toward)
+        #     _arrow_down('up')  # hold UP and test for climb start
 
-            t0 = time.time()
-            y_start = (self._get_xy() or (x, y))[1]
-            while time.time() - t0 < 0.45:
-                xy1 = self._get_xy()
-                if xy1 and xy1[1] < y_start - 0.010:  # y decreased => climbing
-                    started = True
-                    break
-                time.sleep(0.02)
+        #     t0 = time.time()
+        #     y_start = (self._get_xy() or (x, y))[1]
+        #     while time.time() - t0 < 0.45:
+        #         xy1 = self._get_xy()
+        #         if xy1 and xy1[1] < y_start - 0.010:  # y decreased => climbing
+        #             started = True
+        #             break
+        #         time.sleep(0.02)
 
-            if not started:
-                _arrow_up('up')
-                # tiny micro-nudge toward rope (no TP), but stay in tight band
-                # so we don't walk past the anchor:
-                nudge_dir = toward
-                self.ctrl.hold(nudge_dir); time.sleep(0.040); self.ctrl.release(nudge_dir)
-                time.sleep(0.10)
-                attempts -= 1
+        #     if not started:
+        #         _arrow_up('up')
+        #         # tiny micro-nudge toward rope (no TP), but stay in tight band
+        #         # so we don't walk past the anchor:
+        #         nudge_dir = toward
+        #         self.ctrl.hold(nudge_dir); time.sleep(0.040); self.ctrl.release(nudge_dir)
+        #         time.sleep(0.10)
+        #         attempts -= 1
 
-        if not started:
-            # last resort
-            self._grab_rope_and_climb(target_y=target_y, max_secs=max_secs)
-            return
+        # if not started:
+        #     # last resort
+        #     self._grab_rope_and_climb(target_y=target_y, max_secs=max_secs)
+        #     return
+
+        # Try up to 6 sticky attempts right at this anchor
+        for _ in range(6):
+            if self._attempt_rope_grab_sticky(toward):
+                break
+            # tiny nudge toward rope, stay near anchor
+            self.ctrl.hold(toward); time.sleep(0.04); self.ctrl.release(toward)
+            time.sleep(0.10)
+        else:
+            return False
 
         # Hold UP until target_y reached, then a bit extra to clear the lip
         y_last = (self._get_xy() or (x, y))[1]
         last_improve = time.time()
+        stuck_timer = time.time()
         deadline = time.time() + max_secs
         reached = False
         while time.time() < deadline:
@@ -831,8 +956,19 @@ class PetrisACW:
                 reached = True
                 break
             if (y_last - y2) > 0.001:
-                y_last = y2; last_improve = time.time()
-            elif time.time() - last_improve > 0.7:
+                y_last = y2
+                last_improve = time.time()
+                stuck_timer = time.time()
+            else:
+                # plateau watchdog: if we've been in same band for >= stuck_secs,
+                # press&hold UP a bit harder to clear the lip/knockback.
+                if time.time() - stuck_timer >= CFG.stuck_secs:
+                    _arrow_down('up')
+                    time.sleep(CFG.unstick_hold_up_secs)  # hold UP hard for 2s
+                    _arrow_up('up')
+                    stuck_timer = time.time()  # reset and continue trying
+            
+            if time.time() - last_improve > 0.7:
                 break
             time.sleep(0.02)
 
@@ -968,7 +1104,7 @@ class PetrisACW:
         # NEW: precise approach (TP allowed only while far; no-TP near rope)
         self._go_to_anchor_precise(target_x)
 
-    def _grab_rope_and_climb(self, target_y: float, max_secs: float = 2.5):
+    def _grab_rope_and_climb(self, target_y: float, max_secs: float = 2.5, force_side: Optional[str] = None):
         """
         From your pre-climb anchor, grab rope with (dir + JUMP + UP), confirm y decreases,
         then KEEP HOLDING UP until we pass target_y; after reaching, hold UP a bit more.
@@ -976,44 +1112,60 @@ class PetrisACW:
         xy0 = self._get_xy()
         if xy0 is None: return
         x0, y0 = xy0
-        rope_x = self._rope_x()
-        side = 'left' if x0 < rope_x else 'right'
+
+        if force_side in ('left', 'right'):
+            side = force_side
+        else:
+            rope_x = self._rope_x()
+            side = 'left' if x0 < rope_x else 'right'
         toward = 'right' if side == 'left' else 'left'
 
         # ensure we are at recorded pre-climb spot on the correct side
         self._goto_preclimb_anchor(side)
 
         # Try to latch onto rope
-        started = False
-        for _ in range(6):
-            _arrow_down(toward)
-            press(CFG.keys.JUMP, 0.03)
-            _arrow_up(toward)
-            _arrow_down('up')  # start holding UP; we won't let go until finish
+        # started = False
+        # for _ in range(6):
+        #     _arrow_down(toward)
+        #     press(CFG.keys.JUMP, 0.03)
+        #     _arrow_up(toward)
+        #     _arrow_down('up')  # start holding UP; we won't let go until finish
 
-            # see if y decreases (climb actually started)
-            t0 = time.time()
-            y_start = self._get_xy()[1] if self._get_xy() else y0
-            while time.time() - t0 < 0.45:
-                xy1 = self._get_xy()
-                if xy1 and (xy1[1] < y_start - 0.010):
-                    started = True
-                    break
-                time.sleep(0.02)
-            if started:
+        #     # see if y decreases (climb actually started)
+        #     t0 = time.time()
+        #     y_start = self._get_xy()[1] if self._get_xy() else y0
+        #     while time.time() - t0 < 0.45:
+        #         xy1 = self._get_xy()
+        #         if xy1 and (xy1[1] < y_start - 0.010):
+        #             started = True
+        #             break
+        #         time.sleep(0.02)
+        #     if started:
+        #         break
+        #     # failed, retry
+        #     _arrow_up('up')
+        #     time.sleep(0.10)
+
+        # if not started:
+        #     # fallback if for some reason we couldn't latch
+        #     self._climb_to_y(target_y)
+        #     return
+        
+        # Try up to 5 sticky attempts at this anchor
+        for _ in range(5):
+            if self._attempt_rope_grab_sticky(toward):
                 break
-            # failed, retry
-            _arrow_up('up')
+            # tiny nudge toward rope but stay in place overall (no TP)
+            self.ctrl.hold(toward); time.sleep(0.04); self.ctrl.release(toward)
             time.sleep(0.10)
-
-        if not started:
-            # fallback if for some reason we couldn't latch
-            self._climb_to_y(target_y)
-            return
+        else:
+            # never grabbed
+            return False
 
         # Keep holding UP until we reach target_y, then hold extra for stability
         y_last = self._get_xy()[1] if self._get_xy() else y0
         last_improve = time.time()
+        stuck_timer = time.time()
         deadline = time.time() + max_secs
         reached = False
         while time.time() < deadline:
@@ -1032,7 +1184,17 @@ class PetrisACW:
             if (y_last - y) > 0.001:
                 y_last = y
                 last_improve = time.time()
-            elif time.time() - last_improve > 0.7:  # plateaued on some ledge
+                stuck_timer = time.time()
+            else:
+                # plateau watchdog: if we've been in same band for >= stuck_secs,
+                # press&hold UP a bit harder to clear the lip/knockback.
+                if time.time() - stuck_timer >= CFG.stuck_secs:
+                    _arrow_down('up')
+                    time.sleep(CFG.unstick_hold_up_secs)  # hold UP hard for 2s
+                    _arrow_up('up')
+                    stuck_timer = time.time()  # reset and continue trying
+
+            if time.time() - last_improve > 0.7:  # plateaued on some ledge
                 break
 
             time.sleep(0.02)
@@ -1050,6 +1212,54 @@ class PetrisACW:
 
         _arrow_up('up')  # finally release
         return reached
+    
+    def _attempt_rope_grab_sticky(self, toward: str) -> bool:
+        """
+        Try to grab the rope while holding the horizontal key through a short
+        'stick' window so knockback won't cancel the approach.
+        Returns True if climb started (y decreased), else False.
+        """
+        # Press sequence: HOLD toward + JUMP, then HOLD UP, and keep holding toward for stick_ms
+        stick_ms = random.randint(CFG.knock_stick_min_ms, CFG.knock_stick_max_ms)
+
+        # Snapshot starting y
+        xy0 = self._get_xy()
+        if not xy0:
+            return False
+        _, y0 = xy0
+
+        # Start inputs
+        _arrow_down(toward)
+        pdi.press(CFG.keys.JUMP)
+        _arrow_down('up')
+
+        # During the stick window, keep holding the horizontal arrow as well
+        t_end = time.time() + (stick_ms / 1000.0)
+        started = False
+        y_ref = y0
+        while time.time() < t_end:
+            xy = self._get_xy()
+            if xy:
+                y = xy[1]
+                # climbing on minimap = y decreases
+                if y < y_ref - CFG.knock_detect_dy:
+                    started = True
+                    break
+                # track best improvement
+                if y < y_ref:
+                    y_ref = y
+            time.sleep(0.015)
+
+        # After stick window, release the horizontal, keep UP if started
+        _arrow_up(toward)
+
+        if not started:
+            # didn’t get on the rope: release UP and fail
+            _arrow_up('up')
+            return False
+
+        # success: we’re climbing (UP still held by caller)
+        return True
 
 
     # ---- Casting + spawn sync
@@ -1060,28 +1270,30 @@ class PetrisACW:
         elapsed = now - last
         if last == 0.0:
             return  # first time at this point: just cast
-        # if elapsed < sp.RESPAWN_SEC - sp.EARLY_TOL:
-        #     # Arrived slightly too early: wait just enough
-        #     wait_for = (sp.RESPAWN_SEC - sp.EARLY_TOL) - elapsed
-        #     sleep(max(0.0, min(wait_for, 2.0)))
-        # elif elapsed > sp.RESPAWN_SEC + sp.LATE_TOL and point_name in ('P1', 'P3'):
-        #     # Off-sync: do a reset here (double-cast)
-        #     self.ctrl.cast_meteor()
-        #     sleep(sp.RESET_DELAY)
-        #     self.ctrl.cast_meteor()
-        #     self.points.last_cast[point_name] = time.time()
-        #     return 'reset'
+        if elapsed < sp.RESPAWN_SEC - sp.EARLY_TOL:
+            # Arrived slightly too early: wait just enough
+            wait_for = (sp.RESPAWN_SEC - sp.EARLY_TOL) - elapsed
+            sleep(max(0.0, min(wait_for, 2.0)))
+        elif elapsed > sp.RESPAWN_SEC + sp.LATE_TOL and point_name in ('P1', 'P3'):
+            # Off-sync: do a reset here (double-cast)
+            self.ctrl.cast_meteor()
+            sleep(sp.RESET_DELAY)
+            self.ctrl.cast_meteor()
+            self.points.last_cast[point_name] = time.time()
+            return 'reset'
 
     def _arrive_and_cast(self, point_name: str):
         # Buffs only at P1 & P4
-        self.buffs.tick(point_name)
-
+        did_buff = self.buffs.tick(point_name)
+        if did_buff:
+            # Give the client time to finish the buff animation before Meteor
+            time.sleep(random.uniform(CFG.buff_settle_min, CFG.buff_settle_max))
         # Spawn timing / reset (P1 & P3 double-cast)
         did_reset = self._maybe_wait_or_reset(point_name) == 'reset'
         if did_reset:
             # we already double-cast inside _maybe_wait_or_reset
             self.points.last_cast[point_name] = time.time()
-            time.sleep(CFG.cast_lock_secs)
+            # time.sleep(CFG.cast_lock_secs)
             if hasattr(self, 'feeder'):
                 self.feeder.maybe_feed()
             return
@@ -1140,18 +1352,21 @@ class PetrisACW:
         p2 = self.points.get('P2'); p3 = self.points.get('P3')
         if not p2 or not p3:
             return
+        
+        # Always approach from LEFT side of the rope
+        self._goto_preclimb_anchor('left')
 
         # Up to 3 total attempts (initial + 2 retries)
         ok = False
-        for attempt in range(3):
+        for _ in range(3):
             # re-anchor before each attempt to ensure a clean grab
-            xy = self._get_xy()
-            rope_x = self._rope_x()
-            if xy:
-                side = 'left' if xy[0] < rope_x else 'right'
-                self._goto_preclimb_anchor(side)  # this should include the short settle pause
+            # xy = self._get_xy()
+            # rope_x = self._rope_x()
+            # if xy:
+            #     side = 'left' if xy[0] < rope_x else 'right'
+            #     self._goto_preclimb_anchor(side)  # this should include the short settle pause
 
-            ok = self._grab_rope_and_climb(target_y=p3[1], max_secs=3.5)
+            ok = self._grab_rope_and_climb(target_y=p3[1], max_secs=3.5, force_side='left')
             if ok:
                 break
 
@@ -1160,8 +1375,13 @@ class PetrisACW:
 
         if not ok:
             # last resort: use simple climb so the loop can continue
-            print('[WARN] P2→P3 climb failed; using fallback climb once.')
-            self._climb_to_y(p3[1])
+            print('[WARN] P2→P3 climb failed; fall back to P1.')
+            # self._climb_to_y(p3[1])
+            p1 = self.points.get('P1')
+            self._move_horiz_to(p1[0], allow_tp=True)  # small align; no TP looks more human here
+            self._arrive_and_cast('P1')
+            self.override_next = 'P1'
+            return
 
         # align X on the top and cast
         self._move_horiz_to(p3[0], allow_tp=False)  # small align; no TP looks more human here
@@ -1206,6 +1426,12 @@ class PetrisACW:
             # Safety: if we fell to the lowest floor, rescue back to P2
             if self._rescue_if_bottom():
                 current = 'P2'
+                continue
+
+            # If a leg requested a reroute (e.g., P2→P3 failed)
+            if self.override_next:
+                current = self.override_next
+                self.override_next = None
                 continue
 
             current = self._advance_from(current)
@@ -1255,7 +1481,7 @@ def toggle_preview(bot):
 
 def main():
     bot = PetrisACW()
-
+    start_stuck_watchdog(bot.mm)
     # start auto-focus watchdog
     autof = AutoFocus(bot.gw, enabled=CFG.auto_focus_enabled, period=CFG.auto_focus_period)
 

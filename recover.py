@@ -150,7 +150,8 @@ class Buffs:
 
 @dataclass
 class Config:
-    window_title: str = 'MapleLegends'
+    # window_title: str = 'MapleLegends'
+    window_title: str = '192.168'
     keys: Keys = field(default_factory=Keys)
     timers: Timers = field(default_factory=Timers)
     # --- Auto-focus config ---

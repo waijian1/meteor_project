@@ -89,22 +89,22 @@ class MinimapConfig:
     # Defaults work for a typical MapleLegends window with minimap at top-left.
     
     # Local
-    x: int = 4
-    y: int = 26
-    w: int = 137
-    h: int = 94
-
-    # Remote
     # x: int = 4
     # y: int = 26
     # w: int = 137
     # h: int = 94
 
+    # Remote
+    x: int = 4
+    y: int = 26
+    w: int = 137
+    h: int = 94
+
 
 @dataclass
 class Config:
-    window_title: str = 'MapleLegends'
-    # window_title: str = '192.168'
+    # window_title: str = 'MapleLegends'
+    window_title: str = '192.168'
     keys: Keys = field(default_factory=Keys)
     timers: Timers = field(default_factory=Timers)
     spawn: SpawnSync = field(default_factory=SpawnSync)

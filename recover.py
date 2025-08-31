@@ -155,7 +155,7 @@ class Config:
     keys: Keys = field(default_factory=Keys)
     timers: Timers = field(default_factory=Timers)
     # --- Auto-focus config ---
-    auto_focus_enabled: bool = True
+    auto_focus_enabled: bool = False
     auto_focus_period: float = 0.25  # seconds between checks
 
 CFG = Config()

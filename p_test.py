@@ -26,12 +26,13 @@ NOTES
 This code does NOT bypass anti-cheat. Use responsibly and at your own risk.
 """
 from __future__ import annotations
+import argparse
 import time
 import json
 import os
 import random
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 import threading
 import numpy as np
@@ -68,9 +69,9 @@ class Keys:
 
 @dataclass
 class Timers:
-    MW: float = 200.0
+    MW: float = 150.0
     MG: float = 150.0
-    SB: float = 100.0
+    SB: float = 60.0
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 
 
@@ -109,12 +110,13 @@ class Config:
     timers: Timers = field(default_factory=Timers)
     spawn: SpawnSync = field(default_factory=SpawnSync)
     minimap: MinimapConfig = field(default_factory=MinimapConfig)
-    points_file: str = 'p_points.json'  # stores normalized [0..1] coords
+    points_file: str = os.path.join('points', 'default_points.json')  # stores normalized [0..1] coords
+    minimap_file: str = os.path.join('minimap', 'default_minimap.json')  # stores map-specific minimap ROI
     tol_x: float = 0.03   # how close (normalized) we need to be to a point in X
     tol_y: float = 0.03   # same for Y
     move_tick: float = 0.08  # sleep between movement ticks
     debug: bool = False
-    cast_lock_secs: float = 3
+    cast_lock_secs: float = 4
     climb_extra_hold_secs: float = 0.8  # keep UP a bit longer after reaching P3-Y
     tp_min_interval: float = 0.18     # glide TP pulse interval range
     tp_max_interval: float = 0.25
@@ -148,9 +150,67 @@ class Config:
     buff_chain_gap: float = 0.1          # small gap between multiple buff presses
     buff_settle_min: float = 2         # wait after any buff before Meteor
     buff_settle_max: float = 3
+    buff_precast_pause_secs: float = 1.0   # stop briefly before each buff press
+    buff_interval_jitter_secs: float = 5.0 # per-buff random jitter +/- secs
+    startup_keys: List[str] = field(default_factory=lambda: ['keys.MG', 'keys.MW', 'keys.SB'])  # supports literals (e.g. '1') and key refs (e.g. 'keys.MG')
+    startup_key_hold_min: float = 0.10
+    startup_key_hold_max: float = 0.14
+    startup_key_gap: float = 1.5
+    # --- Multi-platform recovery (for same-row routes that can fall) ---
+    recovery_enabled: bool = True
+    recovery_levels: List[str] = field(default_factory=lambda: ['C', 'B', 'A'])  # top -> bottom
+    recovery_tol_y: float = 0.02
+    recovery_max_steps: int = 4
+    recovery_retry_per_step: int = 3
+    recovery_tp_up_attempts: int = 1
+    recovery_tp_up_probe_secs: float = 0.25
+    recovery_anchor_no_progress_secs: float = 1.2
+    recovery_anchor_timeout_secs: float = 4.0
+    dismount_attempts: int = 4
+    dismount_wait_secs: float = 0.30
 
 
 CFG = Config()
+ACTIVE_MAP_NAME = 'default'
+
+
+def sanitize_map_name(name: str) -> str:
+    safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in name.strip().lower())
+    return safe or 'default'
+
+
+def configure_map_points_file(map_name: str):
+    global ACTIVE_MAP_NAME
+    ACTIVE_MAP_NAME = map_name
+    CFG.points_file = os.path.join('points', f'{map_name}_points.json')
+    CFG.minimap_file = os.path.join('minimap', f'{map_name}_minimap.json')
+
+
+def save_minimap_profile():
+    folder = os.path.dirname(CFG.minimap_file)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(CFG.minimap_file, 'w') as f:
+        json.dump(asdict(CFG.minimap), f, indent=2)
+    print(f'[TUNE] Saved minimap profile -> {CFG.minimap_file}')
+
+
+def load_minimap_profile():
+    if not os.path.exists(CFG.minimap_file):
+        print(f'[TUNE] No minimap profile found, using defaults: {CFG.minimap_file}')
+        return
+    try:
+        with open(CFG.minimap_file, 'r') as f:
+            data = json.load(f)
+        for key in ('x', 'y', 'w', 'h'):
+            if key in data:
+                setattr(CFG.minimap, key, int(data[key]))
+        print(
+            '[TUNE] Loaded minimap profile from '
+            f'{CFG.minimap_file}: x={CFG.minimap.x} y={CFG.minimap.y} w={CFG.minimap.w} h={CFG.minimap.h}'
+        )
+    except Exception as e:
+        print(f'[TUNE] Failed to load minimap profile ({CFG.minimap_file}): {e}')
 
 # ------------------------------- Utilities -----------------------------------
 
@@ -354,15 +414,23 @@ class Points:
         return self.points.get(name)
 
     def save(self):
+        folder = os.path.dirname(self.filename)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
         with open(self.filename, 'w') as f:
             json.dump(self.points, f, indent=2)
         print(f'[CAL] Saved points -> {self.filename}')
 
     def load(self):
         if os.path.exists(self.filename):
-            with open(self.filename, 'r') as f:
-                self.points = json.load(f)
-            print(f'[CAL] Loaded points from {self.filename}: {self.points}')
+            try:
+                with open(self.filename, 'r') as f:
+                    self.points = json.load(f)
+                print(f'[CAL] Loaded points from {self.filename}: {self.points}')
+            except json.JSONDecodeError as e:
+                print(f'[ERR] Invalid points JSON in {self.filename}: {e}')
+                print('[ERR] Fix the JSON file (or press F9 to overwrite) and restart.')
+                self.points = {}
 
 # ---- Force OS-level ARROW keys (not numpad) ----
 VK = {'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28}
@@ -434,6 +502,21 @@ class Buffs:
         self.next_mg = now
         self.next_sb = now
 
+    def _next_due_with_jitter(self, base_interval: float) -> float:
+        jitter = rand(-CFG.buff_interval_jitter_secs, CFG.buff_interval_jitter_secs)
+        interval = max(1.0, base_interval + jitter)
+        return time.time() + max(1.0, interval - self.t.RECAST_MARGIN)
+
+    def mark_buff_casted(self, key_name: str):
+        """Advance buff cooldown timer when the buff was cast outside Buffs.tick()."""
+        k = key_name.upper()
+        if k == 'MG':
+            self.next_mg = self._next_due_with_jitter(self.t.MG)
+        elif k == 'MW':
+            self.next_mw = self._next_due_with_jitter(self.t.MW)
+        elif k == 'SB':
+            self.next_sb = self._next_due_with_jitter(self.t.SB)
+
     def tick(self, at_point: str):
         if at_point not in ('P1', 'P4'):
             return
@@ -466,27 +549,31 @@ class Buffs:
 
         now = time.time()
         if now >= self.next_mg:
+            time.sleep(CFG.buff_precast_pause_secs)
             pdi.keyDown(self.k.MG)
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
             pdi.keyUp(self.k.MG)
-            self.next_mg = now + self.t.MG - self.t.RECAST_MARGIN
+            self.next_mg = self._next_due_with_jitter(self.t.MG)
             did = True
             time.sleep(CFG.buff_chain_gap)
 
         now = time.time()
         if now >= self.next_sb:
+            time.sleep(CFG.buff_precast_pause_secs)
             pdi.keyDown(self.k.SB)
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
             pdi.keyUp(self.k.SB)
-            self.next_sb = now + self.t.SB - self.t.RECAST_MARGIN
+            self.next_sb = self._next_due_with_jitter(self.t.SB)
             did = True
             # no need to sleep again here unless you notice collisions
 
+        now = time.time()
         if now >= self.next_mw:
+            time.sleep(CFG.buff_precast_pause_secs)
             pdi.keyDown(self.k.MW)
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
             pdi.keyUp(self.k.MW)
-            self.next_mw = now + self.t.MW - self.t.RECAST_MARGIN
+            self.next_mw = self._next_due_with_jitter(self.t.MW)
             did = True
             time.sleep(CFG.buff_chain_gap)
 
@@ -640,6 +727,21 @@ class PetrisACW:
         self.running = False
         self.feeder = PetFeeder(CFG.keys)
         self.override_next: Optional[str] = None  # when set, main loop jumps to this P-point
+
+    def _route_points(self):
+        """Return calibrated route points sorted by numeric suffix: P1, P2, ..."""
+        out = []
+        for name, xy in self.points.points.items():
+            if not isinstance(name, str) or not name.startswith('P'):
+                continue
+            suffix = name[1:]
+            if not suffix.isdigit():
+                continue
+            if not isinstance(xy, (list, tuple)) or len(xy) != 2:
+                continue
+            out.append((name, (float(xy[0]), float(xy[1]))))
+        out.sort(key=lambda kv: int(kv[0][1:]))
+        return out
 
     # ---- Movement primitives guided by minimap
     def _go_to_anchor_precise(self, anchor_x: float):
@@ -803,14 +905,14 @@ class PetrisACW:
 
     # ---------- Closest Platform helpers ----------
     def _closest_p_point(self) -> Optional[str]:
-        """Return 'P1'..'P4' nearest to current position."""
+        """Return nearest calibrated route point."""
         xy = self._get_xy()
+        route = self._route_points()
+        if not route:
+            return None
         if xy is None:
-            return 'P1'
-        pts = {p: self.points.get(p) for p in ('P1','P2','P3','P4')}
-        pts = {k:v for k,v in pts.items() if v is not None}
-        if not pts:
-            return 'P1'
+            return route[0][0]
+        pts = {name: pos for name, pos in route}
         x, y = xy
         best = min(pts.items(), key=lambda kv: (kv[1][0]-x)**2 + (kv[1][1]-y)**2)
         return best[0]
@@ -841,15 +943,328 @@ class PetrisACW:
         self._arrive_and_cast(point_name)
 
     def _advance_from(self, point_name: str) -> str:
-        """Do the leg starting at point_name; return next point in ACW order."""
-        if point_name == 'P1':
-            self._leg_p1_to_p2(); return 'P2'
-        if point_name == 'P2':
-            self._leg_p2_to_p3(); return 'P3'
-        if point_name == 'P3':
-            self._leg_p3_to_p4(); return 'P4'
-        # default: P4
-        self._leg_p4_to_p1(); return 'P1'
+        """Move from current route point to the next configured point."""
+        route = self._route_points()
+        if len(route) < 2:
+            return point_name
+
+        names = [name for name, _ in route]
+        if point_name not in names:
+            point_name = names[0]
+
+        idx = names.index(point_name)
+        next_name = names[(idx + 1) % len(names)]
+        src = self.points.get(point_name)
+        dst = self.points.get(next_name)
+        if src and dst:
+            self._move_between_points(src, dst)
+            self._arrive_and_cast(next_name)
+        return next_name
+
+    def _move_between_points(self, current_xy: Tuple[float, float], target_xy: Tuple[float, float]):
+        """
+        Generic movement between any two calibrated points.
+        - If vertical difference is small -> move horizontally only.
+        - If target is higher/lower -> climb/drop first, then align X.
+        """
+        tx, ty = target_xy
+        _, cy = current_xy
+        dy = ty - cy
+
+        if abs(dy) > CFG.tol_y:
+            if dy < 0:
+                climbed = self._grab_rope_and_climb(target_y=ty, max_secs=3.5)
+                if not climbed:
+                    self._climb_to_y(ty)
+            else:
+                self._drop_down_to_y(ty)
+
+        self._move_horiz_to(tx)
+
+    def _run_startup_keys(self):
+        """Press configured startup keys once before route movement."""
+        tokens = [k for k in CFG.startup_keys if isinstance(k, str) and k.strip()]
+        if not tokens:
+            return
+        keys = []
+        key_names = []
+        for token in tokens:
+            t = token.strip()
+            if t.lower().startswith('keys.'):
+                attr = t.split('.', 1)[1].upper()
+                mapped = getattr(CFG.keys, attr, None)
+                if isinstance(mapped, str) and mapped.strip():
+                    keys.append(mapped)
+                    key_names.append(attr)
+                else:
+                    print(f"[RUN] Unknown startup key token skipped: {token}")
+            else:
+                keys.append(t)
+                key_names.append('')
+        if not keys:
+            return
+        print(f"[RUN] Startup key sequence: {tokens} -> {keys}")
+        for i, key in enumerate(keys):
+            pdi.keyDown(key)
+            time.sleep(rand(CFG.startup_key_hold_min, CFG.startup_key_hold_max))
+            pdi.keyUp(key)
+            if key_names[i]:
+                self.buffs.mark_buff_casted(key_names[i])
+            if i < len(keys) - 1:
+                time.sleep(CFG.startup_key_gap)
+
+    def _release_all_move_keys(self):
+        """Force-release movement keys to avoid sticky wall-hug states."""
+        for d in ('left', 'right', 'up', 'down'):
+            try:
+                _arrow_up(d)
+            except Exception:
+                pass
+
+    def _recovery_fail_safe_reset(self):
+        """
+        Recovery unstick sequence after a failed step:
+        release all arrows, pause, and do a tiny jump tap to detach from rope/wall.
+        """
+        self._release_all_move_keys()
+        time.sleep(0.05)
+        try:
+            press(CFG.keys.JUMP, 0.03)
+        except Exception:
+            pass
+        time.sleep(0.08)
+        self._release_all_move_keys()
+
+    def _platform_ref(self, level_name: str) -> Optional[Tuple[float, float]]:
+        return self.points.get(f'PLATFORM_{level_name.upper()}')
+
+    def _recover_anchors(self, from_level: str, to_level: str):
+        up_from = from_level.upper()
+        up_to = to_level.upper()
+        left = self.points.get(f'RECOVER_{up_from}_TO_{up_to}_L')
+        right = self.points.get(f'RECOVER_{up_from}_TO_{up_to}_R')
+        return left, right
+
+    def _recover_move_to_anchor_x(self, target_x: float) -> bool:
+        """
+        Recovery-only anchor approach with explicit stall detection.
+        Returns False if x is not improving (e.g., wall-hug stuck).
+        """
+        start = time.time()
+        last_progress = time.time()
+        best_dx = 999.0
+        direction_held = None
+        try:
+            while True:
+                xy = self._get_xy()
+                if not xy:
+                    time.sleep(0.02)
+                    if time.time() - start > CFG.recovery_anchor_timeout_secs:
+                        return False
+                    continue
+                x, _ = xy
+                dx = target_x - x
+                abs_dx = abs(dx)
+                if abs_dx <= CFG.anchor_window_x:
+                    return True
+
+                if abs_dx < best_dx - 0.001:
+                    best_dx = abs_dx
+                    last_progress = time.time()
+
+                if time.time() - last_progress > CFG.recovery_anchor_no_progress_secs:
+                    return False
+                if time.time() - start > CFG.recovery_anchor_timeout_secs:
+                    return False
+
+                direction = 'right' if dx > 0 else 'left'
+                if direction_held != direction:
+                    if direction_held:
+                        self.ctrl.release(direction_held)
+                    self.ctrl.hold(direction)
+                    direction_held = direction
+                time.sleep(0.02)
+        finally:
+            if direction_held:
+                self.ctrl.release(direction_held)
+
+    def _detect_current_level_index(self) -> Optional[int]:
+        xy = self._get_xy()
+        if not xy:
+            return None
+        _, y = xy
+        refs = []
+        for idx, name in enumerate(CFG.recovery_levels):
+            p = self._platform_ref(name)
+            if p:
+                refs.append((idx, p[1]))
+        if not refs:
+            return None
+        idx, _ = min(refs, key=lambda t: abs(y - t[1]))
+        return idx
+
+    def _dismount_to_platform(self, target_y: float) -> bool:
+        """
+        If we climbed too high on a long rope, jump off rope toward platform.
+        Uses (left/right + jump) several times until we are near target level.
+        """
+        xy = self._get_xy()
+        if not xy:
+            return False
+        x, y = xy
+        if y >= target_y - CFG.recovery_tol_y:
+            return True  # already not above target
+
+        route = self._route_points()
+        if route:
+            avg_x = sum(p[0] for _, p in route) / len(route)
+        else:
+            avg_x = x
+        primary_dir = 'left' if x > avg_x else 'right'
+        alt_dir = 'right' if primary_dir == 'left' else 'left'
+
+        for i in range(CFG.dismount_attempts):
+            direction = primary_dir if i % 2 == 0 else alt_dir
+            _arrow_down(direction)
+            press(CFG.keys.JUMP, 0.03)
+            _arrow_up(direction)
+            time.sleep(CFG.dismount_wait_secs)
+            xy2 = self._get_xy()
+            if xy2 and xy2[1] >= target_y - CFG.recovery_tol_y:
+                return True
+        return False
+
+    def _recover_step(self, from_level: str, to_level: str) -> bool:
+        """
+        Recover one level up using configured anchors for that transition.
+        Example: A->B or B->C.
+        """
+        to_ref = self._platform_ref(to_level)
+        if not to_ref:
+            print(f'[RECOVER] Missing PLATFORM_{to_level.upper()} reference.')
+            return False
+        target_y = to_ref[1]
+
+        left, right = self._recover_anchors(from_level, to_level)
+        xy = self._get_xy()
+        if not xy:
+            return False
+        x, _ = xy
+
+        # choose nearest configured anchor; if none, fallback to generic climb
+        if left and right:
+            anchor = left if abs(left[0] - x) <= abs(right[0] - x) else right
+            side = 'left' if anchor is left else 'right'
+            if not self._recover_move_to_anchor_x(anchor[0]):
+                print(f'[RECOVER] Anchor approach stalled for {from_level}->{to_level}.')
+                self._recovery_fail_safe_reset()
+                return False
+        elif left or right:
+            anchor = left or right
+            side = 'left' if left else 'right'
+            if not self._recover_move_to_anchor_x(anchor[0]):
+                print(f'[RECOVER] Anchor approach stalled for {from_level}->{to_level}.')
+                self._recovery_fail_safe_reset()
+                return False
+        else:
+            side = None
+            print(f'[RECOVER] Missing RECOVER_{from_level.upper()}_TO_{to_level.upper()}_L/R; fallback climb.')
+
+        # Try UP+TP first; if cannot reach, then rope method.
+        if self._tp_up_recover_to_y(target_y):
+            self._dismount_to_platform(target_y)
+            return True
+
+        if side:
+            ok = self._grab_rope_and_climb(
+                target_y=target_y,
+                max_secs=4.5,
+                force_side=side,
+                use_preclimb_anchor=False,
+            )
+        else:
+            ok = self._grab_rope_and_climb(target_y=target_y, max_secs=4.5)
+
+        if not ok:
+            self._recovery_fail_safe_reset()
+            return False
+        self._dismount_to_platform(target_y)
+        return True
+
+    def _tp_up_recover_to_y(self, target_y: float) -> bool:
+        """Try to reach upper platform using UP + TP pulses before rope climb."""
+        for _ in range(CFG.recovery_tp_up_attempts):
+            xy0 = self._get_xy()
+            if not xy0:
+                continue
+            y0 = xy0[1]
+            _arrow_down('up')
+            press(CFG.keys.TP, rand(0.05, 0.07))
+            time.sleep(CFG.recovery_tp_up_probe_secs)
+            _arrow_up('up')
+
+            xy1 = self._get_xy()
+            if not xy1:
+                continue
+            y1 = xy1[1]
+            # Successfully moved up enough or reached target.
+            if y1 <= target_y + CFG.tol_y or (y0 - y1) > 0.01:
+                # If we made progress but not fully at target, allow another short TP-up pulse.
+                if y1 <= target_y + CFG.tol_y:
+                    return True
+                # continue loop and keep trying
+        xyf = self._get_xy()
+        return bool(xyf and xyf[1] <= target_y + CFG.tol_y)
+
+    def _recover_to_route_platform(self) -> bool:
+        """
+        Multi-stage recovery to top route platform (C by default).
+        Handles A->B->C with stepwise rope anchors.
+        """
+        if not CFG.recovery_enabled:
+            return False
+
+        levels = CFG.recovery_levels
+        if len(levels) < 2:
+            return False
+
+        cur_idx = self._detect_current_level_index()
+        if cur_idx is None:
+            return False
+        target_idx = 0  # first entry in recovery_levels is route/top platform
+        if cur_idx <= target_idx:
+            return False
+
+        print(f'[RECOVER] Off route platform detected ({levels[cur_idx]}). Recovering to {levels[target_idx]}...')
+        steps = 0
+        while cur_idx > target_idx and steps < CFG.recovery_max_steps:
+            from_level = levels[cur_idx]
+            to_level = levels[cur_idx - 1]
+            ok = False
+            for attempt in range(1, CFG.recovery_retry_per_step + 1):
+                if self._recover_step(from_level, to_level):
+                    ok = True
+                    break
+                print(f'[RECOVER] Retry {attempt}/{CFG.recovery_retry_per_step} failed: {from_level} -> {to_level}')
+                self._recovery_fail_safe_reset()
+                time.sleep(0.15)
+            if not ok:
+                print(f'[RECOVER] Step failed after retries: {from_level} -> {to_level}')
+                self._recovery_fail_safe_reset()
+                return False
+            steps += 1
+            new_idx = self._detect_current_level_index()
+            if new_idx is None:
+                break
+            cur_idx = new_idx
+
+        # Re-sync to nearest route point on top platform after recovery.
+        nearest = self._closest_p_point()
+        if nearest:
+            tgt = self.points.get(nearest)
+            if tgt:
+                self._move_horiz_to(tgt[0], allow_tp=False)
+        return True
 
     # ---------- Rescue if at bottom platform ----------
     def _rescue_if_bottom(self) -> bool:
@@ -1104,7 +1519,13 @@ class PetrisACW:
         # NEW: precise approach (TP allowed only while far; no-TP near rope)
         self._go_to_anchor_precise(target_x)
 
-    def _grab_rope_and_climb(self, target_y: float, max_secs: float = 2.5, force_side: Optional[str] = None):
+    def _grab_rope_and_climb(
+        self,
+        target_y: float,
+        max_secs: float = 2.5,
+        force_side: Optional[str] = None,
+        use_preclimb_anchor: bool = True,
+    ):
         """
         From your pre-climb anchor, grab rope with (dir + JUMP + UP), confirm y decreases,
         then KEEP HOLDING UP until we pass target_y; after reaching, hold UP a bit more.
@@ -1120,8 +1541,10 @@ class PetrisACW:
             side = 'left' if x0 < rope_x else 'right'
         toward = 'right' if side == 'left' else 'left'
 
-        # ensure we are at recorded pre-climb spot on the correct side
-        self._goto_preclimb_anchor(side)
+        # ensure we are at recorded pre-climb spot on the correct side (normal route).
+        # Recovery flow may already have moved to a dedicated RECOVER_* anchor.
+        if use_preclimb_anchor:
+            self._goto_preclimb_anchor(side)
 
         # Try to latch onto rope
         # started = False
@@ -1406,15 +1829,22 @@ class PetrisACW:
 
     # ---- Public controls
     def start(self):
-        required = all(self.points.get(p) is not None for p in ('P1','P2','P3','P4'))
-        if not required:
-            print('[ERR] Missing calibration for some P points. Set with F1..F4 then save.')
+        route = self._route_points()
+        if len(route) < 2:
+            print('[ERR] Need at least 2 calibrated points (P1..Pn). Set points and save first.')
             return
         self.running = True
-        print('[RUN] Petris ACW routine started. ESC to stop.')
+        print(f'[RUN] Dynamic route started with {len(route)} points. ESC to stop.')
 
         # Find nearest P point and start there
         start_pt = self._closest_p_point()
+        if not start_pt:
+            print('[ERR] No valid route points found.')
+            self.running = False
+            return
+
+        # Optional one-time pre-cast sequence before first movement/cast.
+        self._run_startup_keys()
         self._goto_point(start_pt)  # this casts at start_pt and respects cast-lock
 
         # Continue ACW loop from there
@@ -1423,9 +1853,9 @@ class PetrisACW:
             if keyboard.is_pressed('esc'):
                 raise KeyboardInterrupt
 
-            # Safety: if we fell to the lowest floor, rescue back to P2
-            if self._rescue_if_bottom():
-                current = 'P2'
+            # Multi-platform recovery: e.g. A->B->C before continuing route.
+            if self._recover_to_route_platform():
+                current = self._closest_p_point() or current
                 continue
 
             # If a leg requested a reroute (e.g., P2→P3 failed)
@@ -1480,6 +1910,18 @@ def toggle_preview(bot):
 # ------------------------------ Hotkey Harness -------------------------------
 
 def main():
+    parser = argparse.ArgumentParser(description='MapleLegends ACW bot with per-map points profiles.')
+    parser.add_argument(
+        '--map',
+        dest='map_name',
+        default='default',
+        help='Map profile name used for per-map points storage (example: petris, ulu2, skelegon).',
+    )
+    args = parser.parse_args()
+    map_name = sanitize_map_name(args.map_name)
+    configure_map_points_file(map_name)
+    load_minimap_profile()
+
     bot = PetrisACW()
     start_stuck_watchdog(bot.mm)
     # start auto-focus watchdog
@@ -1493,7 +1935,11 @@ def main():
         bot.points.set_point(name, xy)
 
     print('[INFO] Hotkeys:')
+    print(f'[INFO] Active map profile: {ACTIVE_MAP_NAME}')
+    print(f'[INFO] Points file: {CFG.points_file}')
+    print(f'[INFO] Minimap file: {CFG.minimap_file}')
     print('  F1..F4  -> Set P1..P4 to current position (from minimap)')
+    print('  Ctrl+1..Ctrl+9 -> Set P1..P9 to current position (extended)')
     print('  F9      -> Save points to file')
     print('  F6      -> Toggle minimap debug viewer (ROI, mask, detected dot)')
     print('  F7      -> Toggle LIVE minimap preview')
@@ -1503,6 +1949,9 @@ def main():
     print('  F12     -> Set ROPE_PRE_R (before-rope jump, right side)')
     print('  Ctrl+F10 -> Set RESCUE_PRE_L (bottom-floor rope approach, left)')
     print('  Ctrl+F12 -> Set RESCUE_PRE_R (bottom-floor rope approach, right)')
+    print('  Ctrl+Shift+C/B/A -> Set PLATFORM_C / PLATFORM_B / PLATFORM_A')
+    print('  Alt+F1/F2 -> Set RECOVER_B_TO_C_L / RECOVER_B_TO_C_R')
+    print('  Alt+F3/F4 -> Set RECOVER_A_TO_B_L / RECOVER_A_TO_B_R')
     print('  F5      -> Start/Stop routine')
     print('  ESC     -> Emergency stop')
     print('  Ctrl+Alt+F -> Toggle auto-focus game window')
@@ -1531,11 +1980,27 @@ def main():
         name = 'RESCUE_PRE_L' if side == 'L' else 'RESCUE_PRE_R'
         bot.points.set_point(name, xy)
 
+    def set_platform_ref(level_name: str):
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print(f'[CAL] Could not detect player for PLATFORM_{level_name}.')
+            return
+        bot.points.set_point(f'PLATFORM_{level_name}', xy)
+
+    def set_recover_anchor(name: str):
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print(f'[CAL] Could not detect player for {name}.')
+            return
+        bot.points.set_point(name, xy)
+
     keyboard.add_hotkey('f6', toggle_dbg)
     keyboard.add_hotkey('f1', lambda: set_point('P1'))
     keyboard.add_hotkey('f2', lambda: set_point('P2'))
     keyboard.add_hotkey('f3', lambda: set_point('P3'))
     keyboard.add_hotkey('f4', lambda: set_point('P4'))
+    for i in range(1, 10):
+        keyboard.add_hotkey(f'ctrl+{i}', lambda n=i: set_point(f'P{n}'))
     keyboard.add_hotkey('f9', bot.points.save)
     keyboard.add_hotkey('f7', lambda: toggle_preview(bot))
     keyboard.add_hotkey('f10', lambda: set_rope_pre('L'))  # record left pre-climb
@@ -1543,10 +2008,17 @@ def main():
     keyboard.add_hotkey('f11', lambda: setattr(bot.mm, 'yellow_only', not bot.mm.yellow_only))
     keyboard.add_hotkey('ctrl+f10', lambda: set_rescue_pre('L'))  # rescue anchor on left rope (bottom)
     keyboard.add_hotkey('ctrl+f12', lambda: set_rescue_pre('R'))  # rescue anchor on right rope (bottom)
+    keyboard.add_hotkey('ctrl+shift+c', lambda: set_platform_ref('C'))
+    keyboard.add_hotkey('ctrl+shift+b', lambda: set_platform_ref('B'))
+    keyboard.add_hotkey('ctrl+shift+a', lambda: set_platform_ref('A'))
+    keyboard.add_hotkey('alt+f1', lambda: set_recover_anchor('RECOVER_B_TO_C_L'))
+    keyboard.add_hotkey('alt+f2', lambda: set_recover_anchor('RECOVER_B_TO_C_R'))
+    keyboard.add_hotkey('alt+f3', lambda: set_recover_anchor('RECOVER_A_TO_B_L'))
+    keyboard.add_hotkey('alt+f4', lambda: set_recover_anchor('RECOVER_A_TO_B_R'))
     keyboard.add_hotkey('ctrl+alt+f', lambda: autof.toggle())
 
     def roi_tuner():
-        print('[TUNE] ROI tuner: arrows move (x/y), +/- width, [/] height, ENTER save, ESC exit')
+        print('[TUNE] ROI tuner: arrows move (x/y), +/- or A/D width, [/] or W/S height, ENTER save, ESC exit')
         step_xy = 2
         step_wh = 2
         while True:
@@ -1563,12 +2035,20 @@ def main():
                 m.x += step_xy
             if keyboard.is_pressed('+') or keyboard.is_pressed('='):
                 m.w += step_wh
+            if keyboard.is_pressed('d'):
+                m.w += step_wh
             if keyboard.is_pressed('-') or keyboard.is_pressed('_'):
-                m.w = max(40, m.w - step_wh)
+                m.w = max(20, m.w - step_wh)
+            if keyboard.is_pressed('a'):
+                m.w = max(20, m.w - step_wh)
             if keyboard.is_pressed(']'):
                 m.h += step_wh
+            if keyboard.is_pressed('w'):
+                m.h += step_wh
             if keyboard.is_pressed('['):
-                m.h = max(40, m.h - step_wh)
+                m.h = max(20, m.h - step_wh)
+            if keyboard.is_pressed('s'):
+                m.h = max(20, m.h - step_wh)
 
             # draw current ROI view
             img = bot.gw.capture(bot.gw.minimap_roi())
@@ -1580,6 +2060,7 @@ def main():
             k = cv2.waitKey(30) & 0xFF
             if k in (13, 10):  # Enter
                 print(f"[TUNE] Saved ROI: x={m.x} y={m.y} w={m.w} h={m.h}")
+                save_minimap_profile()
                 cv2.destroyWindow('roi_tuner')
                 break
             if k == 27:  # Esc
@@ -1589,6 +2070,17 @@ def main():
     keyboard.add_hotkey('f8', roi_tuner)
 
     running = {'flag': False}
+
+    def emergency_stop():
+        """Hard stop bot immediately and release held movement keys."""
+        bot.stop()
+        running['flag'] = False
+        for d in ('left', 'right', 'up', 'down'):
+            try:
+                _arrow_up(d)
+            except Exception:
+                pass
+        print('[RUN] Emergency stop triggered (ESC).')
 
     def toggle_run():
         if running['flag']:
@@ -1601,6 +2093,7 @@ def main():
                 bot.stop(); running['flag'] = False
 
     keyboard.add_hotkey('f5', toggle_run)
+    keyboard.add_hotkey('esc', emergency_stop, suppress=False)
 
     # Keep process alive
     try:

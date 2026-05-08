@@ -26,12 +26,13 @@ NOTES
 This code does NOT bypass anti-cheat. Use responsibly and at your own risk.
 """
 from __future__ import annotations
+import argparse
 import time
 import json
 import os
 import random
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 import threading
 import numpy as np
@@ -109,12 +110,13 @@ class Config:
     timers: Timers = field(default_factory=Timers)
     spawn: SpawnSync = field(default_factory=SpawnSync)
     minimap: MinimapConfig = field(default_factory=MinimapConfig)
-    points_file: str = 'p_points.json'  # stores normalized [0..1] coords
+    points_file: str = os.path.join('points', 'default_points.json')  # stores normalized [0..1] coords
+    minimap_file: str = os.path.join('minimap', 'default_minimap.json')  # stores map-specific minimap ROI
     tol_x: float = 0.03   # how close (normalized) we need to be to a point in X
     tol_y: float = 0.03   # same for Y
     move_tick: float = 0.08  # sleep between movement ticks
     debug: bool = False
-    cast_lock_secs: float = 3
+    cast_lock_secs: float = 4
     climb_extra_hold_secs: float = 0.8  # keep UP a bit longer after reaching P3-Y
     tp_min_interval: float = 0.18     # glide TP pulse interval range
     tp_max_interval: float = 0.25
@@ -148,9 +150,53 @@ class Config:
     buff_chain_gap: float = 0.1          # small gap between multiple buff presses
     buff_settle_min: float = 2         # wait after any buff before Meteor
     buff_settle_max: float = 3
+    startup_keys: List[str] = field(default_factory=lambda: ['keys.MG', 'keys.MW', 'keys.SB'])  # supports literals (e.g. '1') and key refs (e.g. 'keys.MG')
+    startup_key_hold_min: float = 0.10
+    startup_key_hold_max: float = 0.14
+    startup_key_gap: float = 1.5
 
 
 CFG = Config()
+ACTIVE_MAP_NAME = 'default'
+
+
+def sanitize_map_name(name: str) -> str:
+    safe = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in name.strip().lower())
+    return safe or 'default'
+
+
+def configure_map_points_file(map_name: str):
+    global ACTIVE_MAP_NAME
+    ACTIVE_MAP_NAME = map_name
+    CFG.points_file = os.path.join('points', f'{map_name}_points.json')
+    CFG.minimap_file = os.path.join('minimap', f'{map_name}_minimap.json')
+
+
+def save_minimap_profile():
+    folder = os.path.dirname(CFG.minimap_file)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    with open(CFG.minimap_file, 'w') as f:
+        json.dump(asdict(CFG.minimap), f, indent=2)
+    print(f'[TUNE] Saved minimap profile -> {CFG.minimap_file}')
+
+
+def load_minimap_profile():
+    if not os.path.exists(CFG.minimap_file):
+        print(f'[TUNE] No minimap profile found, using defaults: {CFG.minimap_file}')
+        return
+    try:
+        with open(CFG.minimap_file, 'r') as f:
+            data = json.load(f)
+        for key in ('x', 'y', 'w', 'h'):
+            if key in data:
+                setattr(CFG.minimap, key, int(data[key]))
+        print(
+            '[TUNE] Loaded minimap profile from '
+            f'{CFG.minimap_file}: x={CFG.minimap.x} y={CFG.minimap.y} w={CFG.minimap.w} h={CFG.minimap.h}'
+        )
+    except Exception as e:
+        print(f'[TUNE] Failed to load minimap profile ({CFG.minimap_file}): {e}')
 
 # ------------------------------- Utilities -----------------------------------
 
@@ -354,15 +400,23 @@ class Points:
         return self.points.get(name)
 
     def save(self):
+        folder = os.path.dirname(self.filename)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
         with open(self.filename, 'w') as f:
             json.dump(self.points, f, indent=2)
         print(f'[CAL] Saved points -> {self.filename}')
 
     def load(self):
         if os.path.exists(self.filename):
-            with open(self.filename, 'r') as f:
-                self.points = json.load(f)
-            print(f'[CAL] Loaded points from {self.filename}: {self.points}')
+            try:
+                with open(self.filename, 'r') as f:
+                    self.points = json.load(f)
+                print(f'[CAL] Loaded points from {self.filename}: {self.points}')
+            except json.JSONDecodeError as e:
+                print(f'[ERR] Invalid points JSON in {self.filename}: {e}')
+                print('[ERR] Fix the JSON file (or press F9 to overwrite) and restart.')
+                self.points = {}
 
 # ---- Force OS-level ARROW keys (not numpad) ----
 VK = {'left': 0x25, 'up': 0x26, 'right': 0x27, 'down': 0x28}
@@ -433,6 +487,17 @@ class Buffs:
         self.next_mw = now  # cast ASAP at start
         self.next_mg = now
         self.next_sb = now
+
+    def mark_buff_casted(self, key_name: str):
+        """Advance buff cooldown timer when the buff was cast outside Buffs.tick()."""
+        now = time.time()
+        k = key_name.upper()
+        if k == 'MG':
+            self.next_mg = now + self.t.MG - self.t.RECAST_MARGIN
+        elif k == 'MW':
+            self.next_mw = now + self.t.MW - self.t.RECAST_MARGIN
+        elif k == 'SB':
+            self.next_sb = now + self.t.SB - self.t.RECAST_MARGIN
 
     def tick(self, at_point: str):
         if at_point not in ('P1', 'P4'):
@@ -641,6 +706,21 @@ class PetrisACW:
         self.feeder = PetFeeder(CFG.keys)
         self.override_next: Optional[str] = None  # when set, main loop jumps to this P-point
 
+    def _route_points(self):
+        """Return calibrated route points sorted by numeric suffix: P1, P2, ..."""
+        out = []
+        for name, xy in self.points.points.items():
+            if not isinstance(name, str) or not name.startswith('P'):
+                continue
+            suffix = name[1:]
+            if not suffix.isdigit():
+                continue
+            if not isinstance(xy, (list, tuple)) or len(xy) != 2:
+                continue
+            out.append((name, (float(xy[0]), float(xy[1]))))
+        out.sort(key=lambda kv: int(kv[0][1:]))
+        return out
+
     # ---- Movement primitives guided by minimap
     def _go_to_anchor_precise(self, anchor_x: float):
         """
@@ -803,14 +883,14 @@ class PetrisACW:
 
     # ---------- Closest Platform helpers ----------
     def _closest_p_point(self) -> Optional[str]:
-        """Return 'P1'..'P4' nearest to current position."""
+        """Return nearest calibrated route point."""
         xy = self._get_xy()
+        route = self._route_points()
+        if not route:
+            return None
         if xy is None:
-            return 'P1'
-        pts = {p: self.points.get(p) for p in ('P1','P2','P3','P4')}
-        pts = {k:v for k,v in pts.items() if v is not None}
-        if not pts:
-            return 'P1'
+            return route[0][0]
+        pts = {name: pos for name, pos in route}
         x, y = xy
         best = min(pts.items(), key=lambda kv: (kv[1][0]-x)**2 + (kv[1][1]-y)**2)
         return best[0]
@@ -841,15 +921,75 @@ class PetrisACW:
         self._arrive_and_cast(point_name)
 
     def _advance_from(self, point_name: str) -> str:
-        """Do the leg starting at point_name; return next point in ACW order."""
-        if point_name == 'P1':
-            self._leg_p1_to_p2(); return 'P2'
-        if point_name == 'P2':
-            self._leg_p2_to_p3(); return 'P3'
-        if point_name == 'P3':
-            self._leg_p3_to_p4(); return 'P4'
-        # default: P4
-        self._leg_p4_to_p1(); return 'P1'
+        """Move from current route point to the next configured point."""
+        route = self._route_points()
+        if len(route) < 2:
+            return point_name
+
+        names = [name for name, _ in route]
+        if point_name not in names:
+            point_name = names[0]
+
+        idx = names.index(point_name)
+        next_name = names[(idx + 1) % len(names)]
+        src = self.points.get(point_name)
+        dst = self.points.get(next_name)
+        if src and dst:
+            self._move_between_points(src, dst)
+            self._arrive_and_cast(next_name)
+        return next_name
+
+    def _move_between_points(self, current_xy: Tuple[float, float], target_xy: Tuple[float, float]):
+        """
+        Generic movement between any two calibrated points.
+        - If vertical difference is small -> move horizontally only.
+        - If target is higher/lower -> climb/drop first, then align X.
+        """
+        tx, ty = target_xy
+        _, cy = current_xy
+        dy = ty - cy
+
+        if abs(dy) > CFG.tol_y:
+            if dy < 0:
+                climbed = self._grab_rope_and_climb(target_y=ty, max_secs=3.5)
+                if not climbed:
+                    self._climb_to_y(ty)
+            else:
+                self._drop_down_to_y(ty)
+
+        self._move_horiz_to(tx)
+
+    def _run_startup_keys(self):
+        """Press configured startup keys once before route movement."""
+        tokens = [k for k in CFG.startup_keys if isinstance(k, str) and k.strip()]
+        if not tokens:
+            return
+        keys = []
+        key_names = []
+        for token in tokens:
+            t = token.strip()
+            if t.lower().startswith('keys.'):
+                attr = t.split('.', 1)[1].upper()
+                mapped = getattr(CFG.keys, attr, None)
+                if isinstance(mapped, str) and mapped.strip():
+                    keys.append(mapped)
+                    key_names.append(attr)
+                else:
+                    print(f"[RUN] Unknown startup key token skipped: {token}")
+            else:
+                keys.append(t)
+                key_names.append('')
+        if not keys:
+            return
+        print(f"[RUN] Startup key sequence: {tokens} -> {keys}")
+        for i, key in enumerate(keys):
+            pdi.keyDown(key)
+            time.sleep(rand(CFG.startup_key_hold_min, CFG.startup_key_hold_max))
+            pdi.keyUp(key)
+            if key_names[i]:
+                self.buffs.mark_buff_casted(key_names[i])
+            if i < len(keys) - 1:
+                time.sleep(CFG.startup_key_gap)
 
     # ---------- Rescue if at bottom platform ----------
     def _rescue_if_bottom(self) -> bool:
@@ -1406,15 +1546,22 @@ class PetrisACW:
 
     # ---- Public controls
     def start(self):
-        required = all(self.points.get(p) is not None for p in ('P1','P2','P3','P4'))
-        if not required:
-            print('[ERR] Missing calibration for some P points. Set with F1..F4 then save.')
+        route = self._route_points()
+        if len(route) < 2:
+            print('[ERR] Need at least 2 calibrated points (P1..Pn). Set points and save first.')
             return
         self.running = True
-        print('[RUN] Petris ACW routine started. ESC to stop.')
+        print(f'[RUN] Dynamic route started with {len(route)} points. ESC to stop.')
 
         # Find nearest P point and start there
         start_pt = self._closest_p_point()
+        if not start_pt:
+            print('[ERR] No valid route points found.')
+            self.running = False
+            return
+
+        # Optional one-time pre-cast sequence before first movement/cast.
+        self._run_startup_keys()
         self._goto_point(start_pt)  # this casts at start_pt and respects cast-lock
 
         # Continue ACW loop from there
@@ -1480,6 +1627,18 @@ def toggle_preview(bot):
 # ------------------------------ Hotkey Harness -------------------------------
 
 def main():
+    parser = argparse.ArgumentParser(description='MapleLegends ACW bot with per-map points profiles.')
+    parser.add_argument(
+        '--map',
+        dest='map_name',
+        default='default',
+        help='Map profile name used for per-map points storage (example: petris, ulu2, skelegon).',
+    )
+    args = parser.parse_args()
+    map_name = sanitize_map_name(args.map_name)
+    configure_map_points_file(map_name)
+    load_minimap_profile()
+
     bot = PetrisACW()
     start_stuck_watchdog(bot.mm)
     # start auto-focus watchdog
@@ -1493,7 +1652,11 @@ def main():
         bot.points.set_point(name, xy)
 
     print('[INFO] Hotkeys:')
+    print(f'[INFO] Active map profile: {ACTIVE_MAP_NAME}')
+    print(f'[INFO] Points file: {CFG.points_file}')
+    print(f'[INFO] Minimap file: {CFG.minimap_file}')
     print('  F1..F4  -> Set P1..P4 to current position (from minimap)')
+    print('  Ctrl+1..Ctrl+9 -> Set P1..P9 to current position (extended)')
     print('  F9      -> Save points to file')
     print('  F6      -> Toggle minimap debug viewer (ROI, mask, detected dot)')
     print('  F7      -> Toggle LIVE minimap preview')
@@ -1536,6 +1699,8 @@ def main():
     keyboard.add_hotkey('f2', lambda: set_point('P2'))
     keyboard.add_hotkey('f3', lambda: set_point('P3'))
     keyboard.add_hotkey('f4', lambda: set_point('P4'))
+    for i in range(1, 10):
+        keyboard.add_hotkey(f'ctrl+{i}', lambda n=i: set_point(f'P{n}'))
     keyboard.add_hotkey('f9', bot.points.save)
     keyboard.add_hotkey('f7', lambda: toggle_preview(bot))
     keyboard.add_hotkey('f10', lambda: set_rope_pre('L'))  # record left pre-climb
@@ -1546,7 +1711,7 @@ def main():
     keyboard.add_hotkey('ctrl+alt+f', lambda: autof.toggle())
 
     def roi_tuner():
-        print('[TUNE] ROI tuner: arrows move (x/y), +/- width, [/] height, ENTER save, ESC exit')
+        print('[TUNE] ROI tuner: arrows move (x/y), +/- or A/D width, [/] or W/S height, ENTER save, ESC exit')
         step_xy = 2
         step_wh = 2
         while True:
@@ -1563,12 +1728,20 @@ def main():
                 m.x += step_xy
             if keyboard.is_pressed('+') or keyboard.is_pressed('='):
                 m.w += step_wh
+            if keyboard.is_pressed('d'):
+                m.w += step_wh
             if keyboard.is_pressed('-') or keyboard.is_pressed('_'):
-                m.w = max(40, m.w - step_wh)
+                m.w = max(20, m.w - step_wh)
+            if keyboard.is_pressed('a'):
+                m.w = max(20, m.w - step_wh)
             if keyboard.is_pressed(']'):
                 m.h += step_wh
+            if keyboard.is_pressed('w'):
+                m.h += step_wh
             if keyboard.is_pressed('['):
-                m.h = max(40, m.h - step_wh)
+                m.h = max(20, m.h - step_wh)
+            if keyboard.is_pressed('s'):
+                m.h = max(20, m.h - step_wh)
 
             # draw current ROI view
             img = bot.gw.capture(bot.gw.minimap_roi())
@@ -1580,6 +1753,7 @@ def main():
             k = cv2.waitKey(30) & 0xFF
             if k in (13, 10):  # Enter
                 print(f"[TUNE] Saved ROI: x={m.x} y={m.y} w={m.w} h={m.h}")
+                save_minimap_profile()
                 cv2.destroyWindow('roi_tuner')
                 break
             if k == 27:  # Esc

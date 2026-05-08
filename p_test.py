@@ -2062,8 +2062,8 @@ def main():
             window_width = draw.shape[1]
             window_height = draw.shape[0]
 
-            x = screen_width - window_width - 0
-            y = screen_height - window_height - 0
+            x = screen_width - window_width - 20
+            y = screen_height - window_height - 60
             cv2.moveWindow('roi_tuner', x, y)
             cv2.imshow('roi_tuner', draw)
 

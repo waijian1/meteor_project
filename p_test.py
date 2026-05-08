@@ -2054,6 +2054,17 @@ def main():
             img = bot.gw.capture(bot.gw.minimap_roi())
             draw = img.copy()
             cv2.rectangle(draw, (1, 1), (draw.shape[1]-2, draw.shape[0]-2), (255, 0, 0), 2)
+            cv2.namedWindow('roi_tuner', cv2.WINDOW_NORMAL)
+
+            screen_width = 1920
+            screen_height = 1080
+
+            window_width = draw.shape[1]
+            window_height = draw.shape[0]
+
+            x = screen_width - window_width - 0
+            y = screen_height - window_height - 0
+            cv2.moveWindow('roi_tuner', x, y)
             cv2.imshow('roi_tuner', draw)
 
             # exit / save controls (ENTER saves, ESC exits)

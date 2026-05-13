@@ -18,6 +18,9 @@ NOTES
   in the top-left (default). Adjust MINIMAP_REGION if needed.
 - First run: Calibrate P1..P4 quickly using F1..F4 while standing at the
   correct in-game locations, then press F9 to save. Press F5 to start/stop.
+- Optional hidden map portals: stand on the portal trigger (where UP works),
+  press Shift+F1..Shift+F9 to save T1..T9. T1 applies before the 1st route
+  leg (P1→P2 in a standard 4-point order), T3 before the 3rd leg (P3→P4), etc.
 - Emergency stop: ESC at any time.
 - Keys used (change to match your binds):
     Meteor: 'x' | Teleport: 'v' | Maple Warrior: 't' | Magic Guard: 'd'
@@ -104,8 +107,8 @@ class MinimapConfig:
 
 @dataclass
 class Config:
-    # window_title: str = 'MapleLegends'
-    window_title: str = '192.168'
+    window_title: str = 'MapleLegends'
+    # window_title: str = '192.168'
     keys: Keys = field(default_factory=Keys)
     timers: Timers = field(default_factory=Timers)
     spawn: SpawnSync = field(default_factory=SpawnSync)
@@ -131,7 +134,7 @@ class Config:
     # --- Casting config ---
     cast_retry_max: int = 0              # extra attempts after the first press (so 3 total)
     cast_confirm_probe_delay: float = 0.09  # wait after key press before testing lock
-    cast_confirm_move_hold: float = 0.10    # how long to “test move” to detect lock
+    cast_confirm_move_hold: float = 0.10    # how long to "test move" to detect lock
     cast_confirm_eps_x: float = 0.004       # if |Δx| < eps during lock window, treat as cast
     # --- Auto-focus config ---
     auto_focus_enabled: bool = False
@@ -139,7 +142,7 @@ class Config:
     # Anti-knockback tuning
     knock_stick_min_ms: int = 220   # keep holding dir this long after jump
     knock_stick_max_ms: int = 320
-    knock_detect_dy: float = 0.010  # y must drop by this much to consider “climbing”
+    knock_detect_dy: float = 0.010  # y must drop by this much to consider "climbing"
     # anti-stuck on rope
     stuck_secs: float = 5.0
     unstick_hold_up_secs: float = 2.0
@@ -168,6 +171,16 @@ class Config:
     recovery_anchor_timeout_secs: float = 4.0
     dismount_attempts: int = 4
     dismount_wait_secs: float = 0.30
+    # --- Map teleporter portals (hidden on minimap; stand on tile and press UP) ---
+    # Calibrate with Shift+F1..F9 -> T1..T9; leg N uses Tn (first edge=T1, second=T2, ...).
+    portal_tol_x: float = 0.010  # tighter than tol_x — must match the narrow trigger strip
+    portal_tol_y: float = 0.010
+    portal_settle_secs: float = 0.14  # pause on tile before tapping UP
+    portal_up_taps_max: int = 4
+    portal_up_hold: float = 0.045  # short tap — avoid registering as rope climb
+    portal_up_gap: float = 0.18  # between taps if minimap did not move
+    portal_confirm_delta: float = 0.012  # minimap delta counts as successful wrap
+    portal_post_secs: float = 0.40  # settle after wrap before continuing route
 
 
 CFG = Config()
@@ -226,6 +239,18 @@ def press(key: str, dur: float = 0.04):
     pdi.keyDown(key)
     sleep(dur)
     pdi.keyUp(key)
+
+
+def _arrow_tap(direction: str, dur: float = 0.04):
+    """Send a single directional arrow press with EXTENDEDKEY flag (not numpad)."""
+    if win32api is None:
+        pdi.keyDown(direction)
+        time.sleep(dur)
+        pdi.keyUp(direction)
+        return
+    win32api.keybd_event(VK[direction], 0, EXT, 0)
+    time.sleep(dur)
+    win32api.keybd_event(VK[direction], 0, EXT | UPF, 0)
 
 
 def chord(k1: str, k2: str, dur: float = 0.05):
@@ -294,7 +319,7 @@ class GameWindow:
         try:
             if win32con is not None:
                 win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-            # ALT “nudge” to satisfy SetForegroundWindow rules
+            # ALT "nudge" to satisfy SetForegroundWindow rules
             if win32api is not None:
                 win32api.keybd_event(0x12, 0, 0, 0)       # Alt down
                 win32api.keybd_event(0x12, 0, 0x0002, 0)  # Alt up
@@ -404,6 +429,7 @@ class Points:
         self.filename = filename
         self.points: Dict[str, Tuple[float, float]] = {}
         self.last_cast: Dict[str, float] = {p: 0.0 for p in ['P1', 'P2', 'P3', 'P4']}
+        self.stuck_watchdog_enabled: Optional[bool] = None  # per-map override for StuckWatchdog
         self.load()
 
     def set_point(self, name: str, xy: Tuple[float, float]):
@@ -425,7 +451,17 @@ class Points:
         if os.path.exists(self.filename):
             try:
                 with open(self.filename, 'r') as f:
-                    self.points = json.load(f)
+                    raw = json.load(f)
+                # Extract per-map flags stored as non-point keys
+                if isinstance(raw, dict):
+                    self.points = {}
+                    for key, val in raw.items():
+                        if key == 'stuck_watchdog_enabled':
+                            self.stuck_watchdog_enabled = bool(val)
+                        elif isinstance(val, (list, tuple)) and len(val) == 2:
+                            self.points[key] = tuple(val)
+                    if self.stuck_watchdog_enabled is not None:
+                        print(f'[CAL] Per-map config: stuck_watchdog_enabled = {self.stuck_watchdog_enabled}')
                 print(f'[CAL] Loaded points from {self.filename}: {self.points}')
             except json.JSONDecodeError as e:
                 print(f'[ERR] Invalid points JSON in {self.filename}: {e}')
@@ -518,35 +554,10 @@ class Buffs:
             self.next_sb = self._next_due_with_jitter(self.t.SB)
 
     def tick(self, at_point: str):
-        if at_point not in ('P1', 'P4'):
+        if at_point not in ('P1'):
             return
         did = False
         now = time.time()
-        # if now >= self.next_mg:
-        #     sleep(rand(0.4,0.6))
-        #     pdi.keyDown(self.k.MG)
-        #     time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
-        #     pdi.keyUp(self.k.MG)
-        #     # pdi.press(self.k.MG, presses=int(rand(2,3)), interval=0); 
-        #     self.next_mg = now + self.t.MG - self.t.RECAST_MARGIN
-        #     sleep(rand(0.4,0.6))
-        # if now >= self.next_sb:
-        #     sleep(rand(00.4,0.6))
-        #     pdi.keyDown(self.k.SB)
-        #     time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
-        #     pdi.keyUp(self.k.SB)
-        #     # pdi.press(self.k.SB, presses=int(rand(2,3)), interval=0); 
-        #     self.next_sb = now + self.t.SB - self.t.RECAST_MARGIN
-        #     sleep(rand(0.4,0.6))
-        # if now >= self.next_mw:
-        #     sleep(rand(0.4,0.6))
-        #     pdi.keyDown(self.k.MW)
-        #     time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
-        #     pdi.keyUp(self.k.MW)
-        #     # pdi.press(self.k.MW, presses=int(rand(2,3)), interval=0); 
-        #     self.next_mw = now + self.t.MW - self.t.RECAST_MARGIN
-        #     sleep(rand(0.4,0.6))  
-
         now = time.time()
         if now >= self.next_mg:
             time.sleep(CFG.buff_precast_pause_secs)
@@ -565,7 +576,6 @@ class Buffs:
             pdi.keyUp(self.k.SB)
             self.next_sb = self._next_due_with_jitter(self.t.SB)
             did = True
-            # no need to sleep again here unless you notice collisions
 
         now = time.time()
         if now >= self.next_mw:
@@ -608,12 +618,6 @@ class PetFeeder:
         self.next_feed = now + delta
         return True
 
-# Integration hint:
-# 1) Create once (e.g., in your PetrisACW.__init__): self.feeder = PetFeeder(CFG.keys)
-# 2) Call regularly from a safe point, e.g., at the end of _arrive_and_cast():
-# self.feeder.maybe_feed()
-# This guarantees no feeding at program start; first feed will be >= 120s later,
-# then randomized around every ~2 minutes.
 
 # ---------------------------- Stuck Watchdog ---------------------------------
 
@@ -663,7 +667,7 @@ class StuckWatchdog:
                             self.last_move = now
                             self.last_xy = xy
                         elif (now - self.last_move) >= CFG.stuck_secs:
-                            # no meaningful movement for stuck_secs → press/hold UP
+                            # no meaningful movement for stuck_secs -> press/hold UP
                             self._hold_up(CFG.unstick_hold_up_secs)
                             # reset timer and sample again next cycle
                             self.last_move = now
@@ -679,10 +683,19 @@ _stuck_guard: Optional[StuckWatchdog] = None
 
 def start_stuck_watchdog(mm: 'MinimapTracker'):
     global _stuck_guard
-    if not CFG.stuck_watchdog_enabled:
+    if _stuck_guard is not None:
         return
-    if _stuck_guard is None:
-        _stuck_guard = StuckWatchdog(mm)
+    # Check per-map override from points file; it takes precedence over global CFG.
+    points = Points(CFG.points_file)
+    if points.stuck_watchdog_enabled is not None:
+        enabled = points.stuck_watchdog_enabled
+        print(f'[WATCH] Per-map stuck_watchdog_enabled = {enabled}')
+    else:
+        enabled = CFG.stuck_watchdog_enabled
+    if not enabled:
+        print('[WATCH] StuckWatchdog disabled per map config.')
+        return
+    _stuck_guard = StuckWatchdog(mm)
 
 # ---------------------------- Auto Focus -------------------------------------
 class AutoFocus:
@@ -783,7 +796,7 @@ class PetrisACW:
         finally:
             if direction_held: self.ctrl.release(direction_held)
 
-        # Stage 3: settle so TP/holds don’t break the jump
+        # Stage 3: settle so TP/holds don't break the jump
         time.sleep(CFG.settle_after_anchor_secs)
 
     def _get_xy(self) -> Optional[Tuple[float, float]]:
@@ -824,26 +837,41 @@ class PetrisACW:
             if direction_held:
                 self.ctrl.release(direction_held)
 
-    def _move_horiz_to(self, target_x: float, direction_hint: Optional[str] = None, allow_tp: bool = True):
+    def _move_horiz_to(
+        self,
+        target_x: float,
+        direction_hint: Optional[str] = None,
+        allow_tp: bool = True,
+        tol_x: Optional[float] = None,
+    ):
         """
         Smooth movement: hold the arrow continuously and (optionally) inject teleport
         pulses at a natural interval while far from target_x. Near target, only micro glides.
+        
+        Includes a timeout (8 seconds) to prevent infinite wall-hugging if the target
+        X cannot be reached (e.g., wrong map layout, obstacle blocking).
         """
+        close_x = CFG.tol_x if tol_x is None else tol_x
         direction_held = None
+        start_time = time.time()
+        timeout = 8.0
         try:
             last_tp = 0.0
             while True:
                 if keyboard.is_pressed('esc'):
                     raise KeyboardInterrupt
+                if time.time() - start_time > timeout:
+                    break
                 xy = self._get_xy()
                 if xy is None:
                     if direction_hint:
                         self.ctrl.hold(direction_hint); time.sleep(0.08); self.ctrl.release(direction_hint)
+                    time.sleep(0.04)
                     continue
 
                 x, _ = xy
                 dx = target_x - x
-                if abs(dx) <= CFG.tol_x:
+                if abs(dx) <= close_x:
                     break
 
                 direction = 'right' if dx > 0 else 'left'
@@ -854,7 +882,7 @@ class PetrisACW:
                     direction_held = direction
                     last_tp = 0.0
 
-                # Far from target → optionally TP pulse
+                # Far from target -> optionally TP pulse
                 if abs(dx) > 0.07:
                     if allow_tp:
                         now = time.time()
@@ -942,6 +970,96 @@ class PetrisACW:
         # Cast here (respects cast-lock inside)
         self._arrive_and_cast(point_name)
 
+    def _portal_key_for_leg(self, from_name: str, to_name: str) -> Optional[str]:
+        """Tn for the Nth edge along sorted route (P1->P2 = T1, ..., last->first = Tn)."""
+        route = self._route_points()
+        names = [n for n, _ in route]
+        if len(names) < 2 or from_name not in names:
+            return None
+        i = names.index(from_name)
+        if names[(i + 1) % len(names)] != to_name:
+            return None
+        slot = i + 1
+        if slot < 1 or slot > 9:
+            return None
+        return f'T{slot}'
+
+    def _align_to_portal_tile(self, tx: float, ty: float):
+        """Stand on calibrated map portal tile (tight tol); UP will open/use the portal.
+        
+        Y approach rules:
+        - If player is below the portal (y > ty): jump DOWN to reach it precisely.
+        - If player is above the portal (y < ty): teleport UP to reach it precisely.
+        - X approach uses TP pulses for fast long-range travel to the portal area.
+        
+        If the player is already close to the tile (within 2x tol), skip all Y
+        movement — just do X micro-adjustment. This prevents unwanted jumping off
+        platforms after a portal wrap lands near another calibrated Tn tile.
+        """
+        tol_x, tol_y = CFG.portal_tol_x, CFG.portal_tol_y
+        xy = self._get_xy()
+        if not xy:
+            return
+        x, y = xy
+        dx = tx - x
+        dy = ty - y
+
+        # If already very close to the tile, skip Y adjustments entirely
+        if abs(dx) <= tol_x * 2 and abs(dy) <= tol_y * 2:
+            # Just micro-step horizontally if needed, no vertical movement
+            self._move_horiz_to(tx, allow_tp=False, tol_x=tol_x)
+            time.sleep(CFG.portal_settle_secs)
+            return
+
+        if dy < -tol_y:
+            # Player is below the portal (y > ty) -> need to go UP
+            self._tp_up_recover_to_y(ty)
+        elif dy > tol_y:
+            # Player is above the portal (y < ty) -> need to go DOWN
+            self._drop_down_to_y(ty)
+        self._move_horiz_to(tx, allow_tp=True, tol_x=tol_x)
+        # Final Y micro-pass (portal often on ground; may need one extra tick)
+        for _ in range(24):
+            xy = self._get_xy()
+            if not xy:
+                break
+            x, y = xy
+            if abs(x - tx) <= tol_x and abs(y - ty) <= tol_y:
+                break
+            if y > ty + tol_y:
+                self._tp_up_recover_to_y(ty)
+            elif y < ty - tol_y:
+                self._drop_down_to_y(ty)
+            self._move_horiz_to(tx, allow_tp=False, tol_x=tol_x)
+            time.sleep(0.02)
+        time.sleep(CFG.portal_settle_secs)
+
+    def _activate_map_portal(self):
+        """Short UP taps (with EXTENDEDKEY arrow, not numpad) until minimap position jumps (wrap).
+        
+        Does NOT hold the teleport key -- tapping TP while on a portal tile would fire
+        the teleport skill instead of activating the portal. Only the UP arrow is used.
+        
+        Returns True immediately when a position jump is detected. The caller is
+        responsible for stepping off the destination portal tile to prevent the
+        StuckWatchdog from holding UP and sending the player back through.
+        """
+        xy0 = self._get_xy()
+        for k in range(CFG.portal_up_taps_max):
+            _arrow_tap(CFG.keys.UP, CFG.portal_up_hold)
+            time.sleep(CFG.portal_up_gap)
+            xy1 = self._get_xy()
+            if xy0 and xy1:
+                if (
+                    abs(xy1[0] - xy0[0]) >= CFG.portal_confirm_delta
+                    or abs(xy1[1] - xy0[1]) >= CFG.portal_confirm_delta
+                ):
+                    return True
+            elif xy1 and not xy0:
+                return True
+        print('[WARN] Map portal UP did not visibly change minimap position; continuing anyway.')
+        return False
+
     def _advance_from(self, point_name: str) -> str:
         """Move from current route point to the next configured point."""
         route = self._route_points()
@@ -954,12 +1072,55 @@ class PetrisACW:
 
         idx = names.index(point_name)
         next_name = names[(idx + 1) % len(names)]
+        # Reset minimap tracker position cache before portal -- fresh read after wrap
+        self.mm.last_xy = None
+        portal_used = self._maybe_use_map_portal_tile(point_name, next_name)
         src = self.points.get(point_name)
         dst = self.points.get(next_name)
         if src and dst:
-            self._move_between_points(src, dst)
+            if portal_used:
+                # Portal placed us on the destination platform. The exit tile is
+                # often right on top of another portal that leads back. Immediately
+                # release all keys and take a small step horizontally to get off
+                # the destination portal tile before the settle wait. This prevents
+                # the StuckWatchdog (or any residual UP) from sending us back through.
+                self._release_all_move_keys()
+                _arrow_tap('left', 0.045)
+                time.sleep(0.08)
+                self._release_all_move_keys()
+                time.sleep(0.25)
+                self._move_horiz_to(dst[0], allow_tp=False)
+            else:
+                # No portal used -- normal movement between points with Y adjustment.
+                time.sleep(0.15)
+                live = self._get_xy()
+                start_xy = live if live is not None else src
+                self._move_between_points(start_xy, dst)
             self._arrive_and_cast(next_name)
         return next_name
+
+    def _maybe_use_map_portal_tile(self, from_name: str, to_name: str):
+        key = self._portal_key_for_leg(from_name, to_name)
+        if not key:
+            return False
+        tile = self.points.get(key)
+        if not tile:
+            return False
+        tx, ty = float(tile[0]), float(tile[1])
+        print(f'[PORTAL] {from_name}->{to_name}: moving to {key} at {tile}')
+        # Keep trying until portal actually activates -- re-align to tile and tap UP
+        # in a loop until the minimap confirms we wrapped to a new map position.
+        attempt = 1
+        while True:
+            if keyboard.is_pressed('esc'):
+                raise KeyboardInterrupt
+            print(f'[PORTAL] Attempt {attempt} -- aligning to tile ({tx:.3f}, {ty:.3f})')
+            self._align_to_portal_tile(tx, ty)
+            if self._activate_map_portal():
+                print(f'[PORTAL] Successfully wrapped on attempt {attempt}.')
+                return True
+            attempt += 1
+            time.sleep(0.15)
 
     def _move_between_points(self, current_xy: Tuple[float, float], target_xy: Tuple[float, float]):
         """
@@ -1314,38 +1475,6 @@ class PetrisACW:
         # Go to the recorded anchor X precisely (no overshoot, no TP near)
         self._go_to_anchor_precise(anchor[0])
 
-        # Try to latch from THIS spot only; don’t drift away
-        # started = False
-        # attempts = 6
-        # while attempts > 0 and not started:
-        #     _arrow_down(toward)
-        #     press(CFG.keys.JUMP, 0.03)
-        #     _arrow_up(toward)
-        #     _arrow_down('up')  # hold UP and test for climb start
-
-        #     t0 = time.time()
-        #     y_start = (self._get_xy() or (x, y))[1]
-        #     while time.time() - t0 < 0.45:
-        #         xy1 = self._get_xy()
-        #         if xy1 and xy1[1] < y_start - 0.010:  # y decreased => climbing
-        #             started = True
-        #             break
-        #         time.sleep(0.02)
-
-        #     if not started:
-        #         _arrow_up('up')
-        #         # tiny micro-nudge toward rope (no TP), but stay in tight band
-        #         # so we don't walk past the anchor:
-        #         nudge_dir = toward
-        #         self.ctrl.hold(nudge_dir); time.sleep(0.040); self.ctrl.release(nudge_dir)
-        #         time.sleep(0.10)
-        #         attempts -= 1
-
-        # if not started:
-        #     # last resort
-        #     self._grab_rope_and_climb(target_y=target_y, max_secs=max_secs)
-        #     return
-
         # Try up to 6 sticky attempts right at this anchor
         for _ in range(6):
             if self._attempt_rope_grab_sticky(toward):
@@ -1545,34 +1674,6 @@ class PetrisACW:
         # Recovery flow may already have moved to a dedicated RECOVER_* anchor.
         if use_preclimb_anchor:
             self._goto_preclimb_anchor(side)
-
-        # Try to latch onto rope
-        # started = False
-        # for _ in range(6):
-        #     _arrow_down(toward)
-        #     press(CFG.keys.JUMP, 0.03)
-        #     _arrow_up(toward)
-        #     _arrow_down('up')  # start holding UP; we won't let go until finish
-
-        #     # see if y decreases (climb actually started)
-        #     t0 = time.time()
-        #     y_start = self._get_xy()[1] if self._get_xy() else y0
-        #     while time.time() - t0 < 0.45:
-        #         xy1 = self._get_xy()
-        #         if xy1 and (xy1[1] < y_start - 0.010):
-        #             started = True
-        #             break
-        #         time.sleep(0.02)
-        #     if started:
-        #         break
-        #     # failed, retry
-        #     _arrow_up('up')
-        #     time.sleep(0.10)
-
-        # if not started:
-        #     # fallback if for some reason we couldn't latch
-        #     self._climb_to_y(target_y)
-        #     return
         
         # Try up to 5 sticky attempts at this anchor
         for _ in range(5):
@@ -1622,7 +1723,7 @@ class PetrisACW:
 
             time.sleep(0.02)
 
-        # If we reached target, keep holding UP a bit longer to “finish the mount”
+        # If we reached target, keep holding UP a bit longer to "finish the mount"
         if reached:
             end_time = time.time() + CFG.climb_extra_hold_secs
             while time.time() < end_time:
@@ -1677,11 +1778,11 @@ class PetrisACW:
         _arrow_up(toward)
 
         if not started:
-            # didn’t get on the rope: release UP and fail
+            # didn't get on the rope: release UP and fail
             _arrow_up('up')
             return False
 
-        # success: we’re climbing (UP still held by caller)
+        # success: we're climbing (UP still held by caller)
         return True
 
 
@@ -1725,18 +1826,18 @@ class PetrisACW:
         tgt = self.points.get(point_name)
         target_x = tgt[0] if tgt else None
 
-        # Try to cast Meteor; verify via “lock test”
+        # Try to cast Meteor; verify via "lock test"
         success = False
         attempts = CFG.cast_retry_max + 1
         for i in range(attempts):
             # 1) Press Meteor
             self.ctrl.cast_meteor()
 
-            # 2) Small delay, then test if we're “locked” (i.e., cast started)
+            # 2) Small delay, then test if we're "locked" (i.e., cast started)
             time.sleep(CFG.cast_confirm_probe_delay)
 
             # Snapshot X before/after a tiny forced move. If cast started,
-            # movement should be ignored and Δx ≈ 0.
+            # movement should be ignored and Dx ≈ 0.
             xy0 = self._get_xy()
             x0 = xy0[0] if xy0 else None
 
@@ -1751,12 +1852,12 @@ class PetrisACW:
                 success = True
                 break
 
-            # Cast likely didn’t register → re-align and retry
+            # Cast likely didn't register -> re-align and retry
             if target_x is not None:
                 self._move_horiz_to(target_x, allow_tp=False)  # small, human look; no TP
                 time.sleep(0.08)  # settle before retry
 
-        # Record + respect cast lock even if we didn’t detect success (be conservative)
+        # Record + respect cast lock even if we didn't detect success (be conservative)
         self.points.last_cast[point_name] = time.time()
         time.sleep(CFG.cast_lock_secs)
 
@@ -1782,13 +1883,6 @@ class PetrisACW:
         # Up to 3 total attempts (initial + 2 retries)
         ok = False
         for _ in range(3):
-            # re-anchor before each attempt to ensure a clean grab
-            # xy = self._get_xy()
-            # rope_x = self._rope_x()
-            # if xy:
-            #     side = 'left' if xy[0] < rope_x else 'right'
-            #     self._goto_preclimb_anchor(side)  # this should include the short settle pause
-
             ok = self._grab_rope_and_climb(target_y=p3[1], max_secs=3.5, force_side='left')
             if ok:
                 break
@@ -1798,8 +1892,7 @@ class PetrisACW:
 
         if not ok:
             # last resort: use simple climb so the loop can continue
-            print('[WARN] P2→P3 climb failed; fall back to P1.')
-            # self._climb_to_y(p3[1])
+            print('[WARN] P2->P3 climb failed; fall back to P1.')
             p1 = self.points.get('P1')
             self._move_horiz_to(p1[0], allow_tp=True)  # small align; no TP looks more human here
             self._arrive_and_cast('P1')
@@ -1858,7 +1951,7 @@ class PetrisACW:
                 current = self._closest_p_point() or current
                 continue
 
-            # If a leg requested a reroute (e.g., P2→P3 failed)
+            # If a leg requested a reroute (e.g., P2->P3 failed)
             if self.override_next:
                 current = self.override_next
                 self.override_next = None
@@ -1952,6 +2045,7 @@ def main():
     print('  Ctrl+Shift+C/B/A -> Set PLATFORM_C / PLATFORM_B / PLATFORM_A')
     print('  Alt+F1/F2 -> Set RECOVER_B_TO_C_L / RECOVER_B_TO_C_R')
     print('  Alt+F3/F4 -> Set RECOVER_A_TO_B_L / RECOVER_A_TO_B_R')
+    print('  Shift+F1..Shift+F9 -> Set T1..T9 (map portal tile; edges use T1, T2, ... along route order)')
     print('  F5      -> Start/Stop routine')
     print('  ESC     -> Emergency stop')
     print('  Ctrl+Alt+F -> Toggle auto-focus game window')
@@ -2015,6 +2109,8 @@ def main():
     keyboard.add_hotkey('alt+f2', lambda: set_recover_anchor('RECOVER_B_TO_C_R'))
     keyboard.add_hotkey('alt+f3', lambda: set_recover_anchor('RECOVER_A_TO_B_L'))
     keyboard.add_hotkey('alt+f4', lambda: set_recover_anchor('RECOVER_A_TO_B_R'))
+    for i in range(1, 10):
+        keyboard.add_hotkey(f'shift+f{i}', lambda n=i: set_point(f'T{n}'))
     keyboard.add_hotkey('ctrl+alt+f', lambda: autof.toggle())
 
     def roi_tuner():
@@ -2024,7 +2120,7 @@ def main():
         while True:
             m = CFG.minimap
 
-            # adjust by keyboard state (works even if OpenCV window isn’t focused)
+            # adjust by keyboard state (works even if OpenCV window isn't focused)
             if keyboard.is_pressed('up'):
                 m.y = max(0, m.y - step_xy)
             if keyboard.is_pressed('down'):
@@ -2054,17 +2150,7 @@ def main():
             img = bot.gw.capture(bot.gw.minimap_roi())
             draw = img.copy()
             cv2.rectangle(draw, (1, 1), (draw.shape[1]-2, draw.shape[0]-2), (255, 0, 0), 2)
-            # cv2.namedWindow('roi_tuner', cv2.WINDOW_NORMAL)
 
-            # screen_width = 1920
-            # screen_height = 1080
-
-            # window_width = draw.shape[1]
-            # window_height = draw.shape[0]
-
-            # x = screen_width - window_width - 20
-            # y = screen_height - window_height - 60
-            # cv2.moveWindow('roi_tuner', x, y)
             cv2.imshow('roi_tuner', draw)
 
             # exit / save controls (ENTER saves, ESC exits)

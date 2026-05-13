@@ -119,7 +119,7 @@ class Config:
     tol_y: float = 0.03   # same for Y
     move_tick: float = 0.08  # sleep between movement ticks
     debug: bool = False
-    cast_lock_secs: float = 4
+    cast_lock_secs: float = 3
     climb_extra_hold_secs: float = 0.8  # keep UP a bit longer after reaching P3-Y
     tp_min_interval: float = 0.18     # glide TP pulse interval range
     tp_max_interval: float = 0.25
@@ -171,6 +171,14 @@ class Config:
     recovery_anchor_timeout_secs: float = 4.0
     dismount_attempts: int = 4
     dismount_wait_secs: float = 0.30
+    # --- Drop-down anti-stuck tuning ---
+    drop_attempts: int = 6
+    drop_probe_secs: float = 0.24
+    drop_success_dy: float = 0.010  # y increases when a DOWN+JUMP drop works
+    drop_stuck_eps: float = 0.004   # smaller movement than this means we likely stayed in place
+    drop_unstick_tp_taps: int = 1   # sideways teleport taps before retrying DOWN+JUMP
+    drop_unstick_walk_secs: float = 0.08
+    drop_unstick_settle_secs: float = 0.12
     # --- Map teleporter portals (hidden on minimap; stand on tile and press UP) ---
     # Calibrate with Shift+F1..F9 -> T1..T9; leg N uses Tn (first edge=T1, second=T2, ...).
     portal_tol_x: float = 0.010  # tighter than tol_x — must match the narrow trigger strip
@@ -1196,6 +1204,17 @@ class PetrisACW:
         time.sleep(0.08)
         self._release_all_move_keys()
 
+    def _unstick_failed_drop(self, attempt_index: int):
+        """Move sideways after a failed DOWN+JUMP so the next drop tries a new tile."""
+        direction = 'left' if attempt_index % 2 == 0 else 'right'
+        print(f'[DROP] No downward movement detected; trying {direction}+TP unstick.')
+        self._release_all_move_keys()
+        time.sleep(0.04)
+        self.ctrl.teleport(direction, taps=CFG.drop_unstick_tp_taps)
+        self.ctrl.walk(direction, CFG.drop_unstick_walk_secs)
+        self._release_all_move_keys()
+        time.sleep(CFG.drop_unstick_settle_secs)
+
     def _platform_ref(self, level_name: str) -> Optional[Tuple[float, float]]:
         return self.points.get(f'PLATFORM_{level_name.upper()}')
 
@@ -1604,29 +1623,50 @@ class PetrisACW:
     def _drop_down_to_y(self, target_y: float):
         """
         Drop to a lower platform using DOWN + JUMP and verify that y increased.
-        Repeat a few times if needed.
+        If DOWN+JUMP leaves us on the same minimap position, move sideways with
+        alternating left/right teleports before retrying so we do not loop forever
+        on a non-droppable tile.
         """
-        attempts = 5
-        while attempts > 0:
+        attempts = CFG.drop_attempts
+        for attempt in range(attempts):
+            if keyboard.is_pressed('esc'):
+                raise KeyboardInterrupt
             xy0 = self._get_xy()
-            if xy0 is None: return
+            if xy0 is None:
+                return False
+            x0, y0 = xy0
+            if y0 >= target_y - CFG.tol_y:
+                return True
+
             y0 = xy0[1]
 
             _arrow_down('down')
             press(CFG.keys.JUMP, 0.03)
             _arrow_up('down')
 
-            time.sleep(0.20)
+            time.sleep(CFG.drop_probe_secs)
             xy1 = self._get_xy()
-            if xy1 is None: continue
-            y1 = xy1[1]
+            if xy1 is None:
+                self._unstick_failed_drop(attempt)
+                continue
+            x1, y1 = xy1
             # y increases when moving downward on the minimap
-            if y1 > y0 + 0.010:
+            if y1 > y0 + CFG.drop_success_dy:
                 # continue dropping until at/near target
                 if y1 >= target_y - CFG.tol_y:
-                    break
-            attempts += -1
+                    return True
+                continue
+
+            # Stayed on same tile/ledge; shift horizontally and try a different drop spot.
+            if abs(x1 - x0) <= CFG.drop_stuck_eps and abs(y1 - y0) <= CFG.drop_stuck_eps:
+                self._unstick_failed_drop(attempt)
+            else:
+                # Some movement happened but not down enough; still nudge to vary next attempt.
+                self._unstick_failed_drop(attempt)
             time.sleep(0.05)
+        print(f'[WARN] Drop to y={target_y:.3f} failed after {attempts} attempts; continuing route from current position.')
+        self._release_all_move_keys()
+        return False
 
     def _rope_x(self) -> float:
         """Use P2 (rope base) if set, else P3 as rope x reference."""

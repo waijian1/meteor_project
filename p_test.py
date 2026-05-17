@@ -87,7 +87,7 @@ class SpawnSync:
     RESPAWN_SEC: float = 0      # tune to your server
     EARLY_TOL: float = 0         # if we arrive earlier than this, wait
     LATE_TOL: float = 999.0          # if we arrive later than this, do double-cast reset
-    RESET_DELAY: float = 1.5       # wait between reset double-cast
+    RESET_DELAY: float = 3.5       # wait between reset double-cast
 
 
 @dataclass
@@ -141,7 +141,7 @@ class Config:
     cast_confirm_move_hold: float = 0.10    # how long to "test move" to detect lock
     cast_confirm_eps_x: float = 0.004       # if |Δx| < eps during lock window, treat as cast
     # --- Double-cast config (applies on maps where double_cast_points is configured) ---
-    double_cast_gap: float = 3.5           # wait between first and second Meteor cast for double-cast
+    double_cast_gap: float = 1.5           # wait between first and second Meteor cast for double-cast
     # --- Auto-focus config ---
     auto_focus_enabled: bool = False
     auto_focus_period: float = 0.25  # seconds between checks

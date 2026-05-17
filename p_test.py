@@ -87,7 +87,7 @@ class SpawnSync:
     RESPAWN_SEC: float = 0      # tune to your server
     EARLY_TOL: float = 0         # if we arrive earlier than this, wait
     LATE_TOL: float = 999.0          # if we arrive later than this, do double-cast reset
-    RESET_DELAY: float = 3.5       # wait between reset double-cast
+    RESET_DELAY: float = 1.5       # wait between reset double-cast
 
 
 @dataclass

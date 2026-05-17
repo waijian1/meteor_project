@@ -159,6 +159,18 @@ class Config:
     startup_key_hold_min: float = 0.10
     startup_key_hold_max: float = 0.14
     startup_key_gap: float = 1.5
+    # NEW PARAMETERS FOR ROTATION LOGIC
+    # ----------------------------------
+    # if True, enable dynamic rotation logic (P1-P2 for X min, then P1-P4)
+    dynamic_rotation_enabled: bool = True
+    # Time in seconds for the initial short rotation (e.g., P1-P2 only)
+    dynamic_rotation_short_phase_duration: float = 180.0  # e.g., 3 minutes
+    # If True, P3/P4 will be skipped if short phase duration is not reached.
+    skip_p3_p4_during_short_phase: bool = True
+    # Custom delays for P3 and P4 when in the full rotation phase
+    delay_p3_full_rotation: float = 0.0  # Additional delay before casting at P3
+    delay_p4_full_rotation: float = 0.0  # Additional delay before casting at P4
+    # ----------------------------------
     # --- Multi-platform recovery (for same-row routes that can fall) ---
     recovery_enabled: bool = True
     recovery_levels: List[str] = field(default_factory=lambda: ['C', 'B', 'A'])  # top -> bottom
@@ -748,6 +760,7 @@ class PetrisACW:
         self.running = False
         self.feeder = PetFeeder(CFG.keys)
         self.override_next: Optional[str] = None  # when set, main loop jumps to this P-point
+        self.rotation_start_time: float = 0.0
 
     def _route_points(self):
         """Return calibrated route points sorted by numeric suffix: P1, P2, ..."""
@@ -1941,13 +1954,374 @@ class PetrisACW:
 
         # align X on the top and cast
         self._move_horiz_to(p3[0], allow_tp=False)  # small align; no TP looks more human here
+
+        # NEW: Conditional delay for P3 if in full rotation phase
+        if CFG.dynamic_rotation_enabled and (time.time() - self.rotation_start_time) >= CFG.dynamic_rotation_short_phase_duration:
+            time.sleep(CFG.delay_p3_full_rotation)
         self._arrive_and_cast('P3')
 
     def _leg_p3_to_p4(self):
         p3 = self.points.get('P3'); p4 = self.points.get('P4')
         if not p3 or not p4: return
+
+        # NEW: Conditional skip for P3-P4 leg
+        if CFG.dynamic_rotation_enabled and CFG.skip_p3_p4_during_short_phase:
+            if (time.time() - self.rotation_start_time) < CFG.dynamic_rotation_short_phase_duration:
+                print("[ROTATION] Skipping P3 -> P4 (short phase active)")
+                self.override_next = 'P1'  # Go back to P1 after skipping P4
+                return
+
         self._move_horiz_to(p4[0], direction_hint='left')
+        # NEW: Conditional delay for P4 if in full rotation phase
+        if CFG.dynamic_rotation_enabled and (time.time() - self.rotation_start_time) >= CFG.dynamic_rotation_short_phase_duration:
+            time.sleep(CFG.delay_p4_full_rotation)
         self._arrive_and_cast('P4')
+
+    def _leg_p4_to_p1(self):
+        p4 = self.points.get('P4'); p1 = self.points.get('P1')
+        if not p4 or not p1: return
+
+        # NEW: Conditional skip for P4-P1 leg (only relevant if P3-P4 was skipped)
+        if CFG.dynamic_rotation_enabled and CFG.skip_p3_p4_during_short_phase:
+            if (time.time() - self.rotation_start_time) < CFG.dynamic_rotation_short_phase_duration:
+                print("[ROTATION] Skipping P4 -> P1 (short phase active), already rerouted to P1")
+                self.override_next = 'P1' # Just ensure we go to P1 if somehow we got here
+                return
+
+        # Teleport down until near P1's Y, then align X - Use if want teleport
+        # self._tp_down_to_y(p1[1])
+
+        # Jump down until near P1's Y, then align X
+        self._drop_down_to_y(p1[1])
+        self._move_horiz_to(p1[0])
+        self._arrive_and_cast('P1')
+
+    # ---- Public controls
+    def start(self):
+        route = self._route_points()
+        if len(route) < 2:
+            print('[ERR] Need at least 2 calibrated points (P1..Pn). Set points and save first.')
+            return
+        self.running = True
+        print(f'[RUN] Dynamic route started with {len(route)} points. ESC to stop.')
+
+        # Find nearest P point and start there
+        start_pt = self._closest_p_point()
+        if not start_pt:
+            print('[ERR] No valid route points found.')
+            self.running = False
+            return
+
+        # NEW: Initialize rotation timer
+        self.rotation_start_time = time.time()
+        if CFG.dynamic_rotation_enabled:
+            print(f"[ROTATION] Dynamic rotation enabled. Short phase (P1-P2) for {CFG.dynamic_rotation_short_phase_duration} seconds.")
+
+        # Optional one-time pre-cast sequence before first movement/cast.
+        self._run_startup_keys()
+        self._goto_point(start_pt)  # this casts at start_pt and respects cast-lock
+
+        # Continue ACW loop from there
+        current = start_pt
+        while self.running:
+            if keyboard.is_pressed('esc'):
+                raise KeyboardInterrupt
+
+            # Multi-platform recovery: e.g. A->B->C before continuing route.
+            if self._recover_to_route_platform():
+                current = self._closest_p_point() or current
+                continue
+
+            # If a leg requested a reroute (e.g., P2->P3 failed)
+            if self.override_next:
+                current = self.override_next
+                self.override_next = None
+                continue
+
+            # NEW: Dynamic rotation logic
+            if CFG.dynamic_rotation_enabled:
+                elapsed_time = time.time() - self.rotation_start_time
+                if elapsed_time < CFG.dynamic_rotation_short_phase_duration:
+                    # Short phase: P1 -> P2 -> P1
+                    if current == 'P1':
+                        print("[ROTATION] Short phase: P1 -> P2")
+                        current = self._advance_from('P1')
+                    elif current == 'P2':
+                        print("[ROTATION] Short phase: P2 -> P1")
+                        # Instead of advancing to P3, we explicitly go back to P1
+                        self._move_horiz_to(self.points.get('P1')[0], allow_tp=True)
+                        self._arrive_and_cast('P1')
+                        current = 'P1'
+                    else:
+                        # If we somehow end up at P3 or P4 during short phase, reroute to P1
+                        print(f"[ROTATION] Unexpected point {current} during short phase. Rerouting to P1.")
+                        self._move_horiz_to(self.points.get('P1')[0], allow_tp=True)
+                        self._arrive_and_cast('P1')
+                        current = 'P1'
+
+                else:
+                    # Full rotation: P1 -> P2 -> P3 -> P4 -> P1
+                    if elapsed_time - CFG.dynamic_rotation_short_phase_duration < 1.0: # Only print once
+                         print("[ROTATION] Full rotation phase activated.")
+                    current = self._advance_from(current)
+
+                    # After completing one full rotation (P4 -> P1), reset timer
+                    if current == 'P1':
+                        # Check if the next expected point in full rotation is P2. If so, it means a full cycle (P1->P4->P1) completed.
+                        route = self._route_points()
+                        names = [name for name, _ in route]
+                        idx = names.index('P4')
+                        if names[(idx + 1) % len(names)] == 'P1':
+                            print("[ROTATION] Full rotation completed. Resetting timer for short phase.")
+                            self.rotation_start_time = time.time()
+            else:
+                # Original behavior if dynamic rotation is not enabled
+                current = self._advance_from(current)
+            time.sleep(0.03)
+
+    def stop(self):
+        self.running = False
+        print('[RUN] Stopped.')
+
+# ---- Live Minimap Preview (F7) ----------------------------------------------
+_preview_running = False
+_preview_thread = None
+
+def _preview_loop(bot):
+    """Continuously shows the minimap debug window even when the bot isn't running."""
+    global _preview_running
+    try:
+        cv2.namedWindow('minimap_debug', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('minimap_debug', 300, 220)
+        # Force debug drawing on
+        CFG.debug = True
+        while _preview_running:
+            # This call both captures the minimap and (when CFG.debug) draws the dot
+            bot.mm.get_player_xy()
+            time.sleep(0.03)  # avoid busy loop
+    except Exception as e:
+        print(f"[DBG] preview error: {e}")
+    finally:
+        try:
+            cv2.destroyWindow('minimap_debug')
+        except:
+            pass
+
+def toggle_preview(bot):
+    """Toggle live preview on/off."""
+    global _preview_running, _preview_thread
+    if _preview_running:
+        _preview_running = False
+        print("[DBG] Live minimap preview stopping...")
+        return
+    _preview_running = True
+    _preview_thread = threading.Thread(target=_preview_loop, args=(bot,), daemon=True)
+    _preview_thread.start()
+    print("[DBG] Live minimap preview started (press F7 again to stop)")
+
+# ------------------------------ Hotkey Harness -------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description='MapleLegends ACW bot with per-map points profiles.')
+    parser.add_argument(
+        '--map',
+        dest='map_name',
+        default='default',
+        help='Map profile name used for per-map points storage (example: petris, ulu2, skelegon).',
+    )
+    args = parser.parse_args()
+    map_name = sanitize_map_name(args.map_name)
+    configure_map_points_file(map_name)
+    load_minimap_profile()
+
+    bot = PetrisACW()
+    start_stuck_watchdog(bot.mm)
+    # start auto-focus watchdog
+    autof = AutoFocus(bot.gw, enabled=CFG.auto_focus_enabled, period=CFG.auto_focus_period)
+
+    def set_point(name: str):
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print('[CAL] Could not detect player on minimap. Adjust MINIMAP_REGION.')
+            return
+        bot.points.set_point(name, xy)
+
+    print('[INFO] Hotkeys:')
+    print(f'[INFO] Active map profile: {ACTIVE_MAP_NAME}')
+    print(f'[INFO] Points file: {CFG.points_file}')
+    print(f'[INFO] Minimap file: {CFG.minimap_file}')
+    print('  F1..F4  -> Set P1..P4 to current position (from minimap)')
+    print('  Ctrl+1..Ctrl+9 -> Set P1..P9 to current position (extended)')
+    print('  F9      -> Save points to file')
+    print('  F6      -> Toggle minimap debug viewer (ROI, mask, detected dot)')
+    print('  F7      -> Toggle LIVE minimap preview')
+    print('  F8      -> ROI tuner (adjust minimap crop live)')
+    print('  F11     -> Toggle yellow-only detection')
+    print('  F10     -> Set ROPE_PRE_L (before-rope jump, left side)')
+    print('  F12     -> Set ROPE_PRE_R (before-rope jump, right side)')
+    print('  Ctrl+F10 -> Set RESCUE_PRE_L (bottom-floor rope approach, left)')
+    print('  Ctrl+F12 -> Set RESCUE_PRE_R (bottom-floor rope approach, right)')
+    print('  Ctrl+Shift+C/B/A -> Set PLATFORM_C / PLATFORM_B / PLATFORM_A')
+    print('  Alt+F1/F2 -> Set RECOVER_B_TO_C_L / RECOVER_B_TO_C_R')
+    print('  Alt+F3/F4 -> Set RECOVER_A_TO_B_L / RECOVER_A_TO_B_R')
+    print('  Shift+F1..Shift+F9 -> Set T1..T9 (map portal tile; edges use T1, T2, ... along route order)')
+    print('  F5      -> Start/Stop routine')
+    print('  ESC     -> Emergency stop')
+    print('  Ctrl+Alt+F -> Toggle auto-focus game window')
+
+    def toggle_dbg():
+        CFG.debug = not CFG.debug
+        print(f"[DBG] minimap debug = {CFG.debug}")
+        if not CFG.debug:
+            for w in ('minimap_debug', 'minimap_mask'):
+                try: cv2.destroyWindow(w)
+                except: pass
+
+    def set_rope_pre(side):
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print('[CAL] Could not detect player on minimap for rope pre-climb.')
+            return
+        name = 'ROPE_PRE_L' if side == 'L' else 'ROPE_PRE_R'
+        bot.points.set_point(name, xy)
+    
+    def set_rescue_pre(side):
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print('[CAL] Could not detect player on minimap for rescue pre-climb.')
+            return
+        name = 'RESCUE_PRE_L' if side == 'L' else 'RESCUE_PRE_R'
+        bot.points.set_point(name, xy)
+
+    def set_platform_ref(level_name: str):
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print(f'[CAL] Could not detect player for PLATFORM_{level_name}.')
+            return
+        bot.points.set_point(f'PLATFORM_{level_name}', xy)
+
+    def set_recover_anchor(name: str):
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print(f'[CAL] Could not detect player for {name}.')
+            return
+        bot.points.set_point(name, xy)
+
+    keyboard.add_hotkey('f6', toggle_dbg)
+    keyboard.add_hotkey('f1', lambda: set_point('P1'))
+    keyboard.add_hotkey('f2', lambda: set_point('P2'))
+    keyboard.add_hotkey('f3', lambda: set_point('P3'))
+    keyboard.add_hotkey('f4', lambda: set_point('P4'))
+    for i in range(1, 10):
+        keyboard.add_hotkey(f'ctrl+{i}', lambda n=i: set_point(f'P{n}'))
+    keyboard.add_hotkey('f9', bot.points.save)
+    keyboard.add_hotkey('f7', lambda: toggle_preview(bot))
+    keyboard.add_hotkey('f10', lambda: set_rope_pre('L'))  # record left pre-climb
+    keyboard.add_hotkey('f12', lambda: set_rope_pre('R'))  # record right pre-climb
+    keyboard.add_hotkey('f11', lambda: setattr(bot.mm, 'yellow_only', not bot.mm.yellow_only))
+    keyboard.add_hotkey('ctrl+f10', lambda: set_rescue_pre('L'))  # rescue anchor on left rope (bottom)
+    keyboard.add_hotkey('ctrl+f12', lambda: set_rescue_pre('R'))  # rescue anchor on right rope (bottom)
+    keyboard.add_hotkey('ctrl+shift+c', lambda: set_platform_ref('C'))
+    keyboard.add_hotkey('ctrl+shift+b', lambda: set_platform_ref('B'))
+    keyboard.add_hotkey('ctrl+shift+a', lambda: set_platform_ref('A'))
+    keyboard.add_hotkey('alt+f1', lambda: set_recover_anchor('RECOVER_B_TO_C_L'))
+    keyboard.add_hotkey('alt+f2', lambda: set_recover_anchor('RECOVER_B_TO_C_R'))
+    keyboard.add_hotkey('alt+f3', lambda: set_recover_anchor('RECOVER_A_TO_B_L'))
+    keyboard.add_hotkey('alt+f4', lambda: set_recover_anchor('RECOVER_A_TO_B_R'))
+    for i in range(1, 10):
+        keyboard.add_hotkey(f'shift+f{i}', lambda n=i: set_point(f'T{n}'))
+    keyboard.add_hotkey('ctrl+alt+f', lambda: autof.toggle())
+
+    def roi_tuner():
+        print('[TUNE] ROI tuner: arrows move (x/y), +/- or A/D width, [/] or W/S height, ENTER save, ESC exit')
+        step_xy = 2
+        step_wh = 2
+        while True:
+            m = CFG.minimap
+
+            # adjust by keyboard state (works even if OpenCV window isn’t focused)
+            if keyboard.is_pressed('up'):
+                m.y = max(0, m.y - step_xy)
+            if keyboard.is_pressed('down'):
+                m.y += step_xy
+            if keyboard.is_pressed('left'):
+                m.x = max(0, m.x - step_xy)
+            if keyboard.is_pressed('right'):
+                m.x += step_xy
+            if keyboard.is_pressed('+') or keyboard.is_pressed('='):
+                m.w += step_wh
+            if keyboard.is_pressed('d'):
+                m.w += step_wh
+            if keyboard.is_pressed('-') or keyboard.is_pressed('_'):
+                m.w = max(20, m.w - step_wh)
+            if keyboard.is_pressed('a'):
+                m.w = max(20, m.w - step_wh)
+            if keyboard.is_pressed(']'):
+                m.h += step_wh
+            if keyboard.is_pressed('w'):
+                m.h += step_wh
+            if keyboard.is_pressed('['):
+                m.h = max(20, m.h - step_wh)
+            if keyboard.is_pressed('s'):
+                m.h = max(20, m.h - step_wh)
+
+            # draw current ROI view
+            img = bot.gw.capture(bot.gw.minimap_roi())
+            draw = img.copy()
+            cv2.rectangle(draw, (1, 1), (draw.shape[1]-2, draw.shape[0]-2), (255, 0, 0), 2)
+
+            cv2.imshow('roi_tuner', draw)
+
+            # exit / save controls (ENTER saves, ESC exits)
+            k = cv2.waitKey(30) & 0xFF
+            if k in (13, 10):  # Enter
+                print(f"[TUNE] Saved ROI: x={m.x} y={m.y} w={m.w} h={m.h}")
+                save_minimap_profile()
+                cv2.destroyWindow('roi_tuner')
+                break
+            if k == 27:  # Esc
+                cv2.destroyWindow('roi_tuner')
+                break
+
+    keyboard.add_hotkey('f8', roi_tuner)
+
+    running = {'flag': False}
+
+    def emergency_stop():
+        """Hard stop bot immediately and release held movement keys."""
+        bot.stop()
+        running['flag'] = False
+        for d in ('left', 'right', 'up', 'down'):
+            try:
+                _arrow_up(d)
+            except Exception:
+                pass
+        print('[RUN] Emergency stop triggered (ESC).')
+
+    def toggle_run():
+        if running['flag']:
+            bot.stop(); running['flag'] = False
+        else:
+            running['flag'] = True
+            try:
+                bot.start()
+            except KeyboardInterrupt:
+                bot.stop(); running['flag'] = False
+
+    keyboard.add_hotkey('f5', toggle_run)
+    keyboard.add_hotkey('esc', emergency_stop, suppress=False)
+
+    # Keep process alive
+    try:
+        while True:
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        bot.stop()
+
+if __name__ == '__main__':
+    main()
+
+# NOTE: This ensures that if the 
 
     def _leg_p4_to_p1(self):
         p4 = self.points.get('P4'); p1 = self.points.get('P1')

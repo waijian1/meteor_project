@@ -26,6 +26,10 @@ NOTES
     Meteor: 'x' | Teleport: 'v' | Maple Warrior: 't' | Magic Guard: 'd'
     Spell Booster: 'j' | Movement: arrows (left/right/up/down)
 
+Per-map config (edit the points JSON file manually):
+  "double_cast_points": ["P1", "P2"]   -- cast Meteor twice at these P-points on this map
+  "stuck_watchdog_enabled": false      -- disable stuck watchdog on this map
+
 This code does NOT bypass anti-cheat. Use responsibly and at your own risk.
 """
 from __future__ import annotations
@@ -136,6 +140,8 @@ class Config:
     cast_confirm_probe_delay: float = 0.09  # wait after key press before testing lock
     cast_confirm_move_hold: float = 0.10    # how long to "test move" to detect lock
     cast_confirm_eps_x: float = 0.004       # if |Δx| < eps during lock window, treat as cast
+    # --- Double-cast config (applies on maps where double_cast_points is configured) ---
+    double_cast_gap: float = 3.5           # wait between first and second Meteor cast for double-cast
     # --- Auto-focus config ---
     auto_focus_enabled: bool = False
     auto_focus_period: float = 0.25  # seconds between checks
@@ -450,6 +456,7 @@ class Points:
         self.points: Dict[str, Tuple[float, float]] = {}
         self.last_cast: Dict[str, float] = {p: 0.0 for p in ['P1', 'P2', 'P3', 'P4']}
         self.stuck_watchdog_enabled: Optional[bool] = None  # per-map override for StuckWatchdog
+        self.double_cast_points: List[str] = []            # per-map list of P-points that should double-cast Meteor
         self.load()
 
     def set_point(self, name: str, xy: Tuple[float, float]):
@@ -463,9 +470,19 @@ class Points:
         folder = os.path.dirname(self.filename)
         if folder:
             os.makedirs(folder, exist_ok=True)
+        # Preserve per-map config keys when saving
+        out = {}
+        for key, val in self.points.items():
+            out[key] = val
+        if self.stuck_watchdog_enabled is not None:
+            out['stuck_watchdog_enabled'] = self.stuck_watchdog_enabled
+        if self.double_cast_points:
+            out['double_cast_points'] = self.double_cast_points
         with open(self.filename, 'w') as f:
-            json.dump(self.points, f, indent=2)
-        print(f'[CAL] Saved points -> {self.filename}')
+            json.dump(out, f, indent=2)
+        print(f'[CAL] Saved {len(out.keys())} keys -> {self.filename}')
+        if self.double_cast_points:
+            print(f'[CAL] double_cast_points = {self.double_cast_points}')
 
     def load(self):
         if os.path.exists(self.filename):
@@ -478,11 +495,18 @@ class Points:
                     for key, val in raw.items():
                         if key == 'stuck_watchdog_enabled':
                             self.stuck_watchdog_enabled = bool(val)
+                        elif key == 'double_cast_points':
+                            if isinstance(val, list):
+                                self.double_cast_points = [str(v) for v in val]
+                            else:
+                                self.double_cast_points = []
                         elif isinstance(val, (list, tuple)) and len(val) == 2:
                             self.points[key] = tuple(val)
                     if self.stuck_watchdog_enabled is not None:
                         print(f'[CAL] Per-map config: stuck_watchdog_enabled = {self.stuck_watchdog_enabled}')
-                print(f'[CAL] Loaded points from {self.filename}: {self.points}')
+                    if self.double_cast_points:
+                        print(f'[CAL] Per-map config: double_cast_points = {self.double_cast_points}')
+                print(f'[CAL] Loaded points from {self.filename}: {len(self.points)} points')
             except json.JSONDecodeError as e:
                 print(f'[ERR] Invalid points JSON in {self.filename}: {e}')
                 print('[ERR] Fix the JSON file (or press F9 to overwrite) and restart.')
@@ -1859,7 +1883,21 @@ class PetrisACW:
             self.points.last_cast[point_name] = time.time()
             return 'reset'
 
+    def _double_cast_meteor(self, point_name: str):
+        """
+        Cast Meteor TWICE at this P-point (for maps configured with double_cast_points).
+        Used for maps where one meteor is not enough to clear spawns.
+        """
+        print(f'[DOUBLE-CAST] Casting Meteor twice at {point_name}...')
+        self.ctrl.cast_meteor()
+        time.sleep(CFG.double_cast_gap + random.uniform(-0.2, 0.2))
+        self.ctrl.cast_meteor()
+        print(f'[DOUBLE-CAST] Double-cast complete at {point_name}.')
+
     def _arrive_and_cast(self, point_name: str):
+        # Check if this point requires double-cast on the current map
+        should_double_cast = point_name in self.points.double_cast_points
+
         # Buffs only at P1 & P4
         did_buff = self.buffs.tick(point_name)
         if did_buff:
@@ -1870,6 +1908,10 @@ class PetrisACW:
         if did_reset:
             # we already double-cast inside _maybe_wait_or_reset
             self.points.last_cast[point_name] = time.time()
+            # if map also requires per-point double-cast on top of reset, do second double-cast
+            if should_double_cast:
+                print(f'[DOUBLE-CAST] Also performing per-map double-cast after reset at {point_name}.')
+                self._double_cast_meteor(point_name)
             # time.sleep(CFG.cast_lock_secs)
             if hasattr(self, 'feeder'):
                 self.feeder.maybe_feed()
@@ -1912,6 +1954,11 @@ class PetrisACW:
 
         # Record + respect cast lock even if we didn't detect success (be conservative)
         self.points.last_cast[point_name] = time.time()
+
+        # If this point requires double-cast and the first cast went through, do second cast
+        if should_double_cast:
+            self._double_cast_meteor(point_name)
+
         time.sleep(CFG.cast_lock_secs)
 
         # Optional: feed pet from a safe point
@@ -2004,6 +2051,10 @@ class PetrisACW:
             return
         self.running = True
         print(f'[RUN] Dynamic route started with {len(route)} points. ESC to stop.')
+
+        # Announce per-map double-cast config if active
+        if self.points.double_cast_points:
+            print(f'[RUN] Per-map double-cast active for points: {self.points.double_cast_points}')
 
         # Find nearest P point and start there
         start_pt = self._closest_p_point()
@@ -2168,301 +2219,10 @@ def main():
     print('  F5      -> Start/Stop routine')
     print('  ESC     -> Emergency stop')
     print('  Ctrl+Alt+F -> Toggle auto-focus game window')
-
-    def toggle_dbg():
-        CFG.debug = not CFG.debug
-        print(f"[DBG] minimap debug = {CFG.debug}")
-        if not CFG.debug:
-            for w in ('minimap_debug', 'minimap_mask'):
-                try: cv2.destroyWindow(w)
-                except: pass
-
-    def set_rope_pre(side):
-        xy = bot.mm.get_player_xy()
-        if xy is None:
-            print('[CAL] Could not detect player on minimap for rope pre-climb.')
-            return
-        name = 'ROPE_PRE_L' if side == 'L' else 'ROPE_PRE_R'
-        bot.points.set_point(name, xy)
-    
-    def set_rescue_pre(side):
-        xy = bot.mm.get_player_xy()
-        if xy is None:
-            print('[CAL] Could not detect player on minimap for rescue pre-climb.')
-            return
-        name = 'RESCUE_PRE_L' if side == 'L' else 'RESCUE_PRE_R'
-        bot.points.set_point(name, xy)
-
-    def set_platform_ref(level_name: str):
-        xy = bot.mm.get_player_xy()
-        if xy is None:
-            print(f'[CAL] Could not detect player for PLATFORM_{level_name}.')
-            return
-        bot.points.set_point(f'PLATFORM_{level_name}', xy)
-
-    def set_recover_anchor(name: str):
-        xy = bot.mm.get_player_xy()
-        if xy is None:
-            print(f'[CAL] Could not detect player for {name}.')
-            return
-        bot.points.set_point(name, xy)
-
-    keyboard.add_hotkey('f6', toggle_dbg)
-    keyboard.add_hotkey('f1', lambda: set_point('P1'))
-    keyboard.add_hotkey('f2', lambda: set_point('P2'))
-    keyboard.add_hotkey('f3', lambda: set_point('P3'))
-    keyboard.add_hotkey('f4', lambda: set_point('P4'))
-    for i in range(1, 10):
-        keyboard.add_hotkey(f'ctrl+{i}', lambda n=i: set_point(f'P{n}'))
-    keyboard.add_hotkey('f9', bot.points.save)
-    keyboard.add_hotkey('f7', lambda: toggle_preview(bot))
-    keyboard.add_hotkey('f10', lambda: set_rope_pre('L'))  # record left pre-climb
-    keyboard.add_hotkey('f12', lambda: set_rope_pre('R'))  # record right pre-climb
-    keyboard.add_hotkey('f11', lambda: setattr(bot.mm, 'yellow_only', not bot.mm.yellow_only))
-    keyboard.add_hotkey('ctrl+f10', lambda: set_rescue_pre('L'))  # rescue anchor on left rope (bottom)
-    keyboard.add_hotkey('ctrl+f12', lambda: set_rescue_pre('R'))  # rescue anchor on right rope (bottom)
-    keyboard.add_hotkey('ctrl+shift+c', lambda: set_platform_ref('C'))
-    keyboard.add_hotkey('ctrl+shift+b', lambda: set_platform_ref('B'))
-    keyboard.add_hotkey('ctrl+shift+a', lambda: set_platform_ref('A'))
-    keyboard.add_hotkey('alt+f1', lambda: set_recover_anchor('RECOVER_B_TO_C_L'))
-    keyboard.add_hotkey('alt+f2', lambda: set_recover_anchor('RECOVER_B_TO_C_R'))
-    keyboard.add_hotkey('alt+f3', lambda: set_recover_anchor('RECOVER_A_TO_B_L'))
-    keyboard.add_hotkey('alt+f4', lambda: set_recover_anchor('RECOVER_A_TO_B_R'))
-    for i in range(1, 10):
-        keyboard.add_hotkey(f'shift+f{i}', lambda n=i: set_point(f'T{n}'))
-    keyboard.add_hotkey('ctrl+alt+f', lambda: autof.toggle())
-
-    def roi_tuner():
-        print('[TUNE] ROI tuner: arrows move (x/y), +/- or A/D width, [/] or W/S height, ENTER save, ESC exit')
-        step_xy = 2
-        step_wh = 2
-        while True:
-            m = CFG.minimap
-
-            # adjust by keyboard state (works even if OpenCV window isn’t focused)
-            if keyboard.is_pressed('up'):
-                m.y = max(0, m.y - step_xy)
-            if keyboard.is_pressed('down'):
-                m.y += step_xy
-            if keyboard.is_pressed('left'):
-                m.x = max(0, m.x - step_xy)
-            if keyboard.is_pressed('right'):
-                m.x += step_xy
-            if keyboard.is_pressed('+') or keyboard.is_pressed('='):
-                m.w += step_wh
-            if keyboard.is_pressed('d'):
-                m.w += step_wh
-            if keyboard.is_pressed('-') or keyboard.is_pressed('_'):
-                m.w = max(20, m.w - step_wh)
-            if keyboard.is_pressed('a'):
-                m.w = max(20, m.w - step_wh)
-            if keyboard.is_pressed(']'):
-                m.h += step_wh
-            if keyboard.is_pressed('w'):
-                m.h += step_wh
-            if keyboard.is_pressed('['):
-                m.h = max(20, m.h - step_wh)
-            if keyboard.is_pressed('s'):
-                m.h = max(20, m.h - step_wh)
-
-            # draw current ROI view
-            img = bot.gw.capture(bot.gw.minimap_roi())
-            draw = img.copy()
-            cv2.rectangle(draw, (1, 1), (draw.shape[1]-2, draw.shape[0]-2), (255, 0, 0), 2)
-
-            cv2.imshow('roi_tuner', draw)
-
-            # exit / save controls (ENTER saves, ESC exits)
-            k = cv2.waitKey(30) & 0xFF
-            if k in (13, 10):  # Enter
-                print(f"[TUNE] Saved ROI: x={m.x} y={m.y} w={m.w} h={m.h}")
-                save_minimap_profile()
-                cv2.destroyWindow('roi_tuner')
-                break
-            if k == 27:  # Esc
-                cv2.destroyWindow('roi_tuner')
-                break
-
-    keyboard.add_hotkey('f8', roi_tuner)
-
-    running = {'flag': False}
-
-    def emergency_stop():
-        """Hard stop bot immediately and release held movement keys."""
-        bot.stop()
-        running['flag'] = False
-        for d in ('left', 'right', 'up', 'down'):
-            try:
-                _arrow_up(d)
-            except Exception:
-                pass
-        print('[RUN] Emergency stop triggered (ESC).')
-
-    def toggle_run():
-        if running['flag']:
-            bot.stop(); running['flag'] = False
-        else:
-            running['flag'] = True
-            try:
-                bot.start()
-            except KeyboardInterrupt:
-                bot.stop(); running['flag'] = False
-
-    keyboard.add_hotkey('f5', toggle_run)
-    keyboard.add_hotkey('esc', emergency_stop, suppress=False)
-
-    # Keep process alive
-    try:
-        while True:
-            time.sleep(0.2)
-    except KeyboardInterrupt:
-        bot.stop()
-
-if __name__ == '__main__':
-    main()
-
-# NOTE: This ensures that if the 
-
-    def _leg_p4_to_p1(self):
-        p4 = self.points.get('P4'); p1 = self.points.get('P1')
-        if not p4 or not p1: return
-        # Teleport down until near P1's Y, then align X - Use if want teleport
-        # self._tp_down_to_y(p1[1])
-
-        # Jump down until near P1's Y, then align X
-        self._drop_down_to_y(p1[1])
-        self._move_horiz_to(p1[0])
-        self._arrive_and_cast('P1')
-
-    # ---- Public controls
-    def start(self):
-        route = self._route_points()
-        if len(route) < 2:
-            print('[ERR] Need at least 2 calibrated points (P1..Pn). Set points and save first.')
-            return
-        self.running = True
-        print(f'[RUN] Dynamic route started with {len(route)} points. ESC to stop.')
-
-        # Find nearest P point and start there
-        start_pt = self._closest_p_point()
-        if not start_pt:
-            print('[ERR] No valid route points found.')
-            self.running = False
-            return
-
-        # Optional one-time pre-cast sequence before first movement/cast.
-        self._run_startup_keys()
-        self._goto_point(start_pt)  # this casts at start_pt and respects cast-lock
-
-        # Continue ACW loop from there
-        current = start_pt
-        while self.running:
-            if keyboard.is_pressed('esc'):
-                raise KeyboardInterrupt
-
-            # Multi-platform recovery: e.g. A->B->C before continuing route.
-            if self._recover_to_route_platform():
-                current = self._closest_p_point() or current
-                continue
-
-            # If a leg requested a reroute (e.g., P2->P3 failed)
-            if self.override_next:
-                current = self.override_next
-                self.override_next = None
-                continue
-
-            current = self._advance_from(current)
-            time.sleep(0.03)
-
-    def stop(self):
-        self.running = False
-        print('[RUN] Stopped.')
-
-# ---- Live Minimap Preview (F7) ----------------------------------------------
-_preview_running = False
-_preview_thread = None
-
-def _preview_loop(bot):
-    """Continuously shows the minimap debug window even when the bot isn't running."""
-    global _preview_running
-    try:
-        cv2.namedWindow('minimap_debug', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('minimap_debug', 300, 220)
-        # Force debug drawing on
-        CFG.debug = True
-        while _preview_running:
-            # This call both captures the minimap and (when CFG.debug) draws the dot
-            bot.mm.get_player_xy()
-            time.sleep(0.03)  # avoid busy loop
-    except Exception as e:
-        print(f"[DBG] preview error: {e}")
-    finally:
-        try:
-            cv2.destroyWindow('minimap_debug')
-        except:
-            pass
-
-def toggle_preview(bot):
-    """Toggle live preview on/off."""
-    global _preview_running, _preview_thread
-    if _preview_running:
-        _preview_running = False
-        print("[DBG] Live minimap preview stopping...")
-        return
-    _preview_running = True
-    _preview_thread = threading.Thread(target=_preview_loop, args=(bot,), daemon=True)
-    _preview_thread.start()
-    print("[DBG] Live minimap preview started (press F7 again to stop)")
-
-# ------------------------------ Hotkey Harness -------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description='MapleLegends ACW bot with per-map points profiles.')
-    parser.add_argument(
-        '--map',
-        dest='map_name',
-        default='default',
-        help='Map profile name used for per-map points storage (example: petris, ulu2, skelegon).',
-    )
-    args = parser.parse_args()
-    map_name = sanitize_map_name(args.map_name)
-    configure_map_points_file(map_name)
-    load_minimap_profile()
-
-    bot = PetrisACW()
-    start_stuck_watchdog(bot.mm)
-    # start auto-focus watchdog
-    autof = AutoFocus(bot.gw, enabled=CFG.auto_focus_enabled, period=CFG.auto_focus_period)
-
-    def set_point(name: str):
-        xy = bot.mm.get_player_xy()
-        if xy is None:
-            print('[CAL] Could not detect player on minimap. Adjust MINIMAP_REGION.')
-            return
-        bot.points.set_point(name, xy)
-
-    print('[INFO] Hotkeys:')
-    print(f'[INFO] Active map profile: {ACTIVE_MAP_NAME}')
-    print(f'[INFO] Points file: {CFG.points_file}')
-    print(f'[INFO] Minimap file: {CFG.minimap_file}')
-    print('  F1..F4  -> Set P1..P4 to current position (from minimap)')
-    print('  Ctrl+1..Ctrl+9 -> Set P1..P9 to current position (extended)')
-    print('  F9      -> Save points to file')
-    print('  F6      -> Toggle minimap debug viewer (ROI, mask, detected dot)')
-    print('  F7      -> Toggle LIVE minimap preview')
-    print('  F8      -> ROI tuner (adjust minimap crop live)')
-    print('  F11     -> Toggle yellow-only detection')
-    print('  F10     -> Set ROPE_PRE_L (before-rope jump, left side)')
-    print('  F12     -> Set ROPE_PRE_R (before-rope jump, right side)')
-    print('  Ctrl+F10 -> Set RESCUE_PRE_L (bottom-floor rope approach, left)')
-    print('  Ctrl+F12 -> Set RESCUE_PRE_R (bottom-floor rope approach, right)')
-    print('  Ctrl+Shift+C/B/A -> Set PLATFORM_C / PLATFORM_B / PLATFORM_A')
-    print('  Alt+F1/F2 -> Set RECOVER_B_TO_C_L / RECOVER_B_TO_C_R')
-    print('  Alt+F3/F4 -> Set RECOVER_A_TO_B_L / RECOVER_A_TO_B_R')
-    print('  Shift+F1..Shift+F9 -> Set T1..T9 (map portal tile; edges use T1, T2, ... along route order)')
-    print('  F5      -> Start/Stop routine')
-    print('  ESC     -> Emergency stop')
-    print('  Ctrl+Alt+F -> Toggle auto-focus game window')
+    print('')
+    print('[PER-MAP DOUBLE-CAST] To cast Meteor twice at certain P-points on this map:')
+    print('  Edit the points JSON file and add "double_cast_points": ["P1", "P2"]')
+    print('  (Replace P1, P2 with the points you want double-cast at.)')
 
     def toggle_dbg():
         CFG.debug = not CFG.debug

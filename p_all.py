@@ -69,9 +69,9 @@ class Keys:
 
 @dataclass
 class Timers:
-    MW: float = 300.0
-    MG: float = 150.0
-    SB: float = 100.0
+    MW: float = 200.0
+    MG: float = 180.0
+    SB: float = 60.0
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 
 
@@ -116,7 +116,7 @@ class Config:
     tol_y: float = 0.03   # same for Y
     move_tick: float = 0.08  # sleep between movement ticks
     debug: bool = False
-    cast_lock_secs: float = 4
+    cast_lock_secs: float = 3
     climb_extra_hold_secs: float = 0.8  # keep UP a bit longer after reaching P3-Y
     tp_min_interval: float = 0.18     # glide TP pulse interval range
     tp_max_interval: float = 0.25

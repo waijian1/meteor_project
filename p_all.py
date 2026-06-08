@@ -1,29 +1,5 @@
 """
-Petris ACW rotation bot (4-point routine with spawn-sync + reset)
------------------------------------------------------------------------------
-This script automates the anti-clockwise Petri rotation you described:
-P1 -> P2 -> P3 -> P4 -> (teleport down) -> P1
-
-It uses the minimap to track the player and moves relative to 4 calibrated
-points. It handles:
-  - Consistent rotation with double-cast resets at P1/P3 when off-sync
-  - Buff upkeep (Maple Warrior, Magic Guard, Spell Booster)
-  - Knockback recovery by re-targeting the next point using live minimap coords
-
-DEPENDENCIES (install with pip):
-  pip install mss opencv-python numpy pydirectinput keyboard pywin32
-
-NOTES
-- Run MapleLegends in windowed or borderless window. Keep the minimap visible
-  in the top-left (default). Adjust MINIMAP_REGION if needed.
-- First run: Calibrate P1..P4 quickly using F1..F4 while standing at the
-  correct in-game locations, then press F9 to save. Press F5 to start/stop.
-- Emergency stop: ESC at any time.
-- Keys used (change to match your binds):
-    Meteor: 'x' | Teleport: 'v' | Maple Warrior: 't' | Magic Guard: 'd'
-    Spell Booster: 'j' | Movement: arrows (left/right/up/down)
-
-This code does NOT bypass anti-cheat. Use responsibly and at your own risk.
+(FOR STANDARD few points rotation repeat)
 """
 from __future__ import annotations
 import argparse

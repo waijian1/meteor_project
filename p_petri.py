@@ -1,4 +1,5 @@
 """
+(FOR PETRIS ONLY)
 Petris ACW rotation bot (4-point routine with spawn-sync + reset)
 -----------------------------------------------------------------------------
 This script automates the anti-clockwise Petri rotation you described:
@@ -103,8 +104,8 @@ class MinimapConfig:
 
 @dataclass
 class Config:
-    window_title: str = 'MapleLegends'
-    # window_title: str = '192.168'
+    # window_title: str = 'MapleLegends'
+    window_title: str = '192.168'
     keys: Keys = field(default_factory=Keys)
     timers: Timers = field(default_factory=Timers)
     spawn: SpawnSync = field(default_factory=SpawnSync)

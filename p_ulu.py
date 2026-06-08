@@ -1,37 +1,5 @@
 """
-(Current Skele rotation weak)
-Petris ACW rotation bot (4-point routine with spawn-sync + reset)
------------------------------------------------------------------------------
-This script automates the anti-clockwise Petri rotation you described:
-P1 -> P2 -> P3 -> P4 -> (teleport down) -> P1
-
-It uses the minimap to track the player and moves relative to 4 calibrated
-points. It handles:
-  - Consistent rotation with double-cast resets at P1/P3 when off-sync
-  - Buff upkeep (Maple Warrior, Magic Guard, Spell Booster)
-  - Knockback recovery by re-targeting the next point using live minimap coords
-
-DEPENDENCIES (install with pip):
-  pip install mss opencv-python numpy pydirectinput keyboard pywin32
-
-NOTES
-- Run MapleLegends in windowed or borderless window. Keep the minimap visible
-  in the top-left (default). Adjust MINIMAP_REGION if needed.
-- First run: Calibrate P1..P4 quickly using F1..F4 while standing at the
-  correct in-game locations, then press F9 to save. Press F5 to start/stop.
-- Optional hidden map portals: stand on the portal trigger (where UP works),
-  press Shift+F1..Shift+F9 to save T1..T9. T1 applies before the 1st route
-  leg (P1→P2 in a standard 4-point order), T3 before the 3rd leg (P3→P4), etc.
-- Emergency stop: ESC at any time.
-- Keys used (change to match your binds):
-    Meteor: 'x' | Teleport: 'v' | Maple Warrior: 't' | Magic Guard: 'd'
-    Spell Booster: 'j' | Movement: arrows (left/right/up/down)
-
-Per-map config (edit the points JSON file manually):
-  "double_cast_points": ["P1", "P2"]   -- cast Meteor twice at these P-points on this map
-  "stuck_watchdog_enabled": false      -- disable stuck watchdog on this map
-
-This code does NOT bypass anti-cheat. Use responsibly and at your own risk.
+For map with short phase long phase for looting
 """
 from __future__ import annotations
 import argparse
@@ -151,7 +119,7 @@ class Config:
     knock_stick_max_ms: int = 320
     knock_detect_dy: float = 0.010  # y must drop by this much to consider "climbing"
     # anti-stuck on rope
-    stuck_secs: float = 10.0
+    stuck_secs: float = 5.0
     unstick_hold_up_secs: float = 2.0
     stuck_eps = 0.0015
     stuck_watchdog_enabled = True
@@ -559,11 +527,7 @@ class Controller:
         _arrow_hold(direction, dur)
 
     def climb(self, dur: float):
-        # Hold both 'up' and Teleport simultaneously for knockback resistance
-        print('WARNING!!!!')
-        pdi.keyDown(self.k.TP)
         _arrow_hold('up', dur)
-        pdi.keyUp(self.k.TP)
 
     def hold(self, direction: str):
         # continuous hold using OS-level arrow (not numpad)
@@ -603,7 +567,7 @@ class Buffs:
             self.next_sb = self._next_due_with_jitter(self.t.SB)
 
     def tick(self, at_point: str):
-        if at_point not in ('P1', 'P2'):
+        if at_point not in ('P1'):
             return
         did = False
         now = time.time()
@@ -814,7 +778,7 @@ class PetrisACW:
         2) When near: NO TP, micro-walk until within anchor_window_x
         3) Small settle before JUMP so TP/holds never break the grab
         """
-        # Stage 1: far approach (TP allowed, but stop at near_tp_cutoff margin so we don't overshoot)
+        # Stage 1: far approach (TP allowed)
         while True:
             xy = self._get_xy()
             if not xy:
@@ -823,11 +787,7 @@ class PetrisACW:
             dx = anchor_x - x
             if abs(dx) <= CFG.near_tp_cutoff:
                 break
-            # Move close enough that we stop TP pulsing before reaching the anchor.
-            # Use tol_x=near_tp_cutoff so _move_horiz_to stops while still in the safe
-            # no-TP zone; stage 2 will micro-walk the remaining distance.
-            self._move_horiz_to(anchor_x, direction_hint=('right' if dx > 0 else 'left'),
-                                allow_tp=True, tol_x=CFG.near_tp_cutoff)
+            self._move_horiz_to(anchor_x, direction_hint=('right' if dx > 0 else 'left'), allow_tp=True)
             # _move_horiz_to exits when close; re-check loop condition
 
         # Stage 2: near approach (NO TP; micro-walk anti-overshoot)
@@ -953,25 +913,20 @@ class PetrisACW:
 
     def _climb_to_y(self, target_y: float):
         # Climb rope until y <= target (remember: top is 0)
-        # Hold Teleport for knockback resistance throughout climb
-        pdi.keyDown(CFG.keys.TP)
-        try:
-            timeout = time.time() + 6.0
-            while True:
-                if keyboard.is_pressed('esc'):
-                    raise KeyboardInterrupt
-                xy = self._get_xy()
-                if xy is None:
-                    _arrow_hold('up', 0.1)
-                    continue
-                x, y = xy
-                if y <= target_y + CFG.tol_y:
-                    break
-                _arrow_hold('up', 0.1)
-                if time.time() > timeout:
-                    break
-        finally:
-            pdi.keyUp(CFG.keys.TP)
+        timeout = time.time() + 6.0
+        while True:
+            if keyboard.is_pressed('esc'):
+                raise KeyboardInterrupt
+            xy = self._get_xy()
+            if xy is None:
+                self.ctrl.climb(0.1)
+                continue
+            x, y = xy
+            if y <= target_y + CFG.tol_y:
+                break
+            self.ctrl.climb(0.1)
+            if time.time() > timeout:
+                break
 
     def _tp_down_to_y(self, target_y: float):
         timeout = time.time() + 6.0
@@ -1193,15 +1148,9 @@ class PetrisACW:
 
         if abs(dy) > CFG.tol_y:
             if dy < 0:
-                # Hold Teleport throughout the entire climb sequence.
-                # The climb() method now holds both 'up' + Teleport.
-                pdi.keyDown(CFG.keys.TP)
-                try:
-                    climbed = self._grab_rope_and_climb(target_y=ty, max_secs=3.5)
-                    if not climbed:
-                        self._climb_to_y(ty)
-                finally:
-                    pdi.keyUp(CFG.keys.TP)
+                climbed = self._grab_rope_and_climb(target_y=ty, max_secs=3.5)
+                if not climbed:
+                    self._climb_to_y(ty)
             else:
                 self._drop_down_to_y(ty)
 
@@ -1495,17 +1444,12 @@ class PetrisACW:
                 break
             cur_idx = new_idx
 
-        # # Re-sync to nearest route point on top platform after recovery.
-        # nearest = self._closest_p_point()
-        # if nearest:
-        #     tgt = self.points.get(nearest)
-        #     if tgt:
-        #         self._move_horiz_to(tgt[0], allow_tp=False)
-
-        # Always reset rotation back to P1 after recovery
-        p1 = self.points.get('P2')
-        if p1:
-            self._move_horiz_to(p1[0], allow_tp=False)
+        # Re-sync to nearest route point on top platform after recovery.
+        nearest = self._closest_p_point()
+        if nearest:
+            tgt = self.points.get(nearest)
+            if tgt:
+                self._move_horiz_to(tgt[0], allow_tp=False)
         return True
 
     # ---------- Rescue if at bottom platform ----------
@@ -1753,7 +1697,7 @@ class PetrisACW:
     def _grab_rope_and_climb(
         self,
         target_y: float,
-        max_secs: float = 4.5,
+        max_secs: float = 2.5,
         force_side: Optional[str] = None,
         use_preclimb_anchor: bool = True,
     ):
@@ -1776,116 +1720,67 @@ class PetrisACW:
         # Recovery flow may already have moved to a dedicated RECOVER_* anchor.
         if use_preclimb_anchor:
             self._goto_preclimb_anchor(side)
-
-        # Live monitoring + retry loop: attempt rope grab, then watch for actual climbing.
-        # If no upward movement detected within a short window, release, realign, retry.
-        max_retries = 5
-        for attempt_idx in range(max_retries):
-            # Grab the rope
-            if not self._attempt_rope_grab_sticky(toward):
-                # _attempt_rope_grab_sticky already released everything on failure
-                time.sleep(0.08)
-                self._goto_preclimb_anchor(side)
-                continue
-
-            # Grab returned True — UP + TP are now held.
-            # Enter a short confirm window: check if y actually decreases (climbing).
-            confirm_end = time.time() + 0.5
-            y_start = (self._get_xy() or (x0, y0))[1]
-            climbing = False
-            confirm_ok = 0
-            while time.time() < confirm_end:
-                if keyboard.is_pressed('esc'): raise KeyboardInterrupt
-                xy = self._get_xy()
-                if xy:
-                    y = xy[1]
-                    if y < y_start - CFG.knock_detect_dy:
-                        confirm_ok += 1
-                        if confirm_ok >= 3:
-                            climbing = True
-                            break
-                    else:
-                        confirm_ok = 0
-                time.sleep(0.03)
-
-            if climbing:
-                print(f'[CLIMB] Confirmed climbing on attempt {attempt_idx + 1}.')
-                break  # proceed to the full climb loop below
-
-            # Not climbing — character likely got knocked off or missed the rope.
-            print(f'[CLIMB] No upward movement after grab (attempt {attempt_idx + 1}); retrying.')
-            # Release UP+TP, realign, retry
-            _arrow_up('up')
-            # pdi.keyUp(CFG.keys.TP)
-            time.sleep(0.08)
-            self._goto_preclimb_anchor(side)
+        
+        # Try up to 5 sticky attempts at this anchor
+        for _ in range(5):
+            if self._attempt_rope_grab_sticky(toward):
+                break
+            # tiny nudge toward rope but stay in place overall (no TP)
+            self.ctrl.hold(toward); time.sleep(0.04); self.ctrl.release(toward)
+            time.sleep(0.10)
         else:
-            # All retries exhausted
-            print('FAILL TIME NOWW !!')
+            # never grabbed
             return False
 
-        # Climbing confirmed — continue holding UP and tap TP for the full climb.
-        print("Climbing (holding up + tapping teleport)...")
+        # Keep holding UP until we reach target_y, then hold extra for stability
         y_last = self._get_xy()[1] if self._get_xy() else y0
         last_improve = time.time()
         stuck_timer = time.time()
         deadline = time.time() + max_secs
-        last_tp_tap = time.time()
         reached = False
-        try:
-            while time.time() < deadline:
-                if keyboard.is_pressed('esc'): raise KeyboardInterrupt
+        while time.time() < deadline:
+            if keyboard.is_pressed('esc'): raise KeyboardInterrupt
+            xy = self._get_xy()
+            if not xy:
+                time.sleep(0.02); continue
+            y = xy[1]
+
+            # reached or passed target
+            if y <= target_y + CFG.tol_y:
+                reached = True
+                break
+
+            # still improving?
+            if (y_last - y) > 0.001:
+                y_last = y
+                last_improve = time.time()
+                stuck_timer = time.time()
+            else:
+                # plateau watchdog: if we've been in same band for >= stuck_secs,
+                # press&hold UP a bit harder to clear the lip/knockback.
+                if time.time() - stuck_timer >= CFG.stuck_secs:
+                    _arrow_down('up')
+                    time.sleep(CFG.unstick_hold_up_secs)  # hold UP hard for 2s
+                    _arrow_up('up')
+                    stuck_timer = time.time()  # reset and continue trying
+
+            if time.time() - last_improve > 0.7:  # plateaued on some ledge
+                break
+
+            time.sleep(0.02)
+
+        # If we reached target, keep holding UP a bit longer to "finish the mount"
+        if reached:
+            end_time = time.time() + CFG.climb_extra_hold_secs
+            while time.time() < end_time:
+                # if y keeps decreasing further, extend a tiny bit
                 xy = self._get_xy()
-                if not xy:
-                    time.sleep(0.02); continue
-                y = xy[1]
-
-                # reached or passed target
-                if y <= target_y + CFG.tol_y:
-                    reached = True
-                    break
-
-                # Tap teleport repeatedly while climbing (provides knockback resistance)
-                now = time.time()
-                if (now - last_tp_tap) >= rand(CFG.tp_min_interval, CFG.tp_max_interval):
-                    self.ctrl.tp_pulse()
-                    last_tp_tap = now
-                # still improving?
-                if (y_last - y) > 0.001:
-                    y_last = y
-                    last_improve = time.time()
-                    stuck_timer = time.time()
-                else:
-                    # plateau watchdog: if we've been in same band for >= stuck_secs,
-                    # press&hold UP a bit harder to clear the lip/knockback.
-                    if time.time() - stuck_timer >= CFG.stuck_secs:
-                        _arrow_down('up')
-                        time.sleep(CFG.unstick_hold_up_secs)  # hold UP hard for 2s
-                        _arrow_up('up')
-                        stuck_timer = time.time()  # reset and continue trying
-
-                if time.time() - last_improve > 0.7:  # plateaued on some ledge
-                    break
-
+                if xy and xy[1] < y_last - 0.002:
+                    end_time = max(end_time, time.time() + 0.2)
+                    y_last = xy[1]
                 time.sleep(0.02)
 
-            # If we reached target, keep holding UP a bit longer to "finish the mount"
-            if reached:
-                end_time = time.time() + CFG.climb_extra_hold_secs
-                while time.time() < end_time:
-                    # if y keeps decreasing further, extend a tiny bit
-                    xy = self._get_xy()
-                    if xy and xy[1] < y_last - 0.002:
-                        end_time = max(end_time, time.time() + 0.2)
-                        y_last = xy[1]
-                    # Keep tapping TP during extra hold too
-                    now = time.time()
-                    if (now - last_tp_tap) >= rand(CFG.tp_min_interval, CFG.tp_max_interval):
-                        self.ctrl.tp_pulse()
-                        last_tp_tap = now
-                    time.sleep(0.02)
-        finally:
-            _arrow_up('up')  # release UP
+        _arrow_up('up')  # finally release
         return reached
     
     def _attempt_rope_grab_sticky(self, toward: str) -> bool:
@@ -1893,12 +1788,8 @@ class PetrisACW:
         Try to grab the rope while holding the horizontal key through a short
         'stick' window so knockback won't cancel the approach.
         Returns True if climb started (y decreased), else False.
-
-        Key order: up is held FIRST, then Teleport is held AFTER up to preserve
-        the Teleport effect (pressing an arrow key after Teleport cancels it).
-        On success: both UP + TP remain held. On failure: both are released.
         """
-        # Press sequence: HOLD toward + JUMP, then HOLD UP, then HOLD TP
+        # Press sequence: HOLD toward + JUMP, then HOLD UP, and keep holding toward for stick_ms
         stick_ms = random.randint(CFG.knock_stick_min_ms, CFG.knock_stick_max_ms)
 
         # Snapshot starting y
@@ -1908,44 +1799,36 @@ class PetrisACW:
         _, y0 = xy0
 
         # Start inputs
-        # Order: toward + JUMP -> hold up (first!) -> hold TP (after up, to preserve effect)
         _arrow_down(toward)
         pdi.press(CFG.keys.JUMP)
-        _arrow_down('up')              # hold up FIRST (must be before TP)
-        # pdi.keyDown(CFG.keys.TP)       # hold TP AFTER up (arrow key after TP would cancel it)
-        print('Climb climb (holding up + teleport)...')
+        _arrow_down('up')
 
         # During the stick window, keep holding the horizontal arrow as well
         t_end = time.time() + (stick_ms / 1000.0)
         started = False
-        good_samples = 0
+        y_ref = y0
         while time.time() < t_end:
             xy = self._get_xy()
             if xy:
                 y = xy[1]
-                # Require sustained upward movement (not a single noise dip)
-                if y < y0 - CFG.knock_detect_dy:
-                    good_samples += 1
-                    if good_samples >= 2:
-                        started = True
-                        break
-                else:
-                    good_samples = 0
-            time.sleep(0.025)
+                # climbing on minimap = y decreases
+                if y < y_ref - CFG.knock_detect_dy:
+                    started = True
+                    break
+                # track best improvement
+                if y < y_ref:
+                    y_ref = y
+            time.sleep(0.015)
 
         # After stick window, release the horizontal, keep UP if started
         _arrow_up(toward)
-        print('Stick window ended, release toward, kept UP held.')
 
         if not started:
             # didn't get on the rope: release UP and fail
-            print('Fail climbed, releasing UP.')
             _arrow_up('up')
-            pdi.keyUp(CFG.keys.TP)  # ensure TP is also released
             return False
 
-        # success: we're climbing (UP still held; _grab_rope_and_climb will add TP now)
-        print('Success climbed, keeping UP held.')
+        # success: we're climbing (UP still held by caller)
         return True
 
 
@@ -2166,8 +2049,7 @@ class PetrisACW:
 
             # Multi-platform recovery: e.g. A->B->C before continuing route.
             if self._recover_to_route_platform():
-                current = 'P2'
-                # current = self._closest_p_point() or current
+                current = self._closest_p_point() or current
                 continue
 
             # If a leg requested a reroute (e.g., P2->P3 failed)
@@ -2185,11 +2067,8 @@ class PetrisACW:
                         print("[ROTATION] Short phase: P1 -> P2")
                         current = self._advance_from('P1')
                     elif current == 'P2':
-                        print("[ROTATION] Short phase: P2 -> P3")
-                        current = self._advance_from('P2')
-                    elif current == 'P3':
-                        print("[ROTATION] Short phase: P3 -> P1")
-                        # Instead of advancing to P4, we explicitly go back to P1
+                        print("[ROTATION] Short phase: P2 -> P1")
+                        # Instead of advancing to P3, we explicitly go back to P1
                         self._move_horiz_to(self.points.get('P1')[0], allow_tp=True)
                         self._arrive_and_cast('P1')
                         current = 'P1'
@@ -2209,14 +2088,12 @@ class PetrisACW:
                     # After completing one full rotation (P4 -> P1), reset timer
                     if current == 'P1':
                         # Check if the next expected point in full rotation is P2. If so, it means a full cycle (P1->P4->P1) completed.
-                        # Guard for maps that only have P1/P2 (no P4)
                         route = self._route_points()
                         names = [name for name, _ in route]
-                        if 'P4' in names:
-                            idx = names.index('P4')
-                            if names[(idx + 1) % len(names)] == 'P1':
-                                print("[ROTATION] Full rotation completed. Resetting timer for short phase.")
-                                self.rotation_start_time = time.time()
+                        idx = names.index('P4')
+                        if names[(idx + 1) % len(names)] == 'P1':
+                            print("[ROTATION] Full rotation completed. Resetting timer for short phase.")
+                            self.rotation_start_time = time.time()
             else:
                 # Original behavior if dynamic rotation is not enabled
                 current = self._advance_from(current)

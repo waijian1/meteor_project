@@ -71,7 +71,7 @@ class Keys:
 class Timers:
     MW: float = 200.0
     MG: float = 180.0
-    SB: float = 60.0
+    SB: float = 40.0
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 
 
@@ -503,7 +503,7 @@ class Buffs:
         if at_point not in ('P1', 'P4'):
             return
         did = False
-        now = time.time()
+        # now = time.time()
         # if now >= self.next_mg:
         #     sleep(rand(0.4,0.6))
         #     pdi.keyDown(self.k.MG)
@@ -538,7 +538,6 @@ class Buffs:
             did = True
             time.sleep(CFG.buff_chain_gap)
 
-        now = time.time()
         if now >= self.next_sb:
             pdi.keyDown(self.k.SB)
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration

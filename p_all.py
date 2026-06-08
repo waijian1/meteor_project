@@ -136,7 +136,7 @@ class Config:
     # --- Auto-focus config ---
     auto_focus_enabled: bool = False
     auto_focus_period: float = 0.25  # seconds between checks
-    # Anti-knockback tuning
+    # Anti-knockback tuningmmam
     knock_stick_min_ms: int = 220   # keep holding dir this long after jump
     knock_stick_max_ms: int = 320
     knock_detect_dy: float = 0.010  # y must drop by this much to consider “climbing”

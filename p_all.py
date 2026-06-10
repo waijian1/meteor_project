@@ -120,7 +120,7 @@ class Config:
     stuck_secs: float = 5.0
     unstick_hold_up_secs: float = 2.0
     stuck_eps = 0.0015
-    stuck_watchdog_enabled = True
+    stuck_watchdog_enabled = False
     stuck_watchdog_period = 0.2
     # Buff → Meteor settle timing
     buff_chain_gap: float = 0.1          # small gap between multiple buff presses

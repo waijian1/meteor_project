@@ -45,9 +45,9 @@ class Keys:
 
 @dataclass
 class Timers:
-    MW: float = 200.0
-    MG: float = 180.0
-    SB: float = 40.0
+    MW: float = 100.0
+    MG: float = 150.0
+    SB: float = 30.0
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 
 

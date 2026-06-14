@@ -142,8 +142,8 @@ class MinimapConfig:
 
 @dataclass
 class Config:
-    # window_title: str = 'MapleLegends'
-    window_title: str = '192.168'
+    window_title: str = 'MapleLegends'
+    # window_title: str = '192.168'
     keys: Keys = field(default_factory=Keys)
     timers: Timers = field(default_factory=Timers)
     spawn: SpawnSync = field(default_factory=SpawnSync)
@@ -1276,17 +1276,19 @@ class PetrisACW:
         dst = self.points.get(next_name)
         if src and dst:
             if portal_used:
-                # Portal placed us on the destination platform. The exit tile is
-                # often right on top of another portal that leads back. Immediately
-                # release all keys and take a small step horizontally to get off
-                # the destination portal tile before the settle wait. This prevents
-                # the StuckWatchdog (or any residual UP) from sending us back through.
+                # Portal placed us somewhere on the destination map. Step off
+                # the exit tile to prevent re-entering, then move to the
+                # destination point using BOTH X and Y (the destination may be
+                # on a different platform level).
                 self._release_all_move_keys()
                 _arrow_tap('left', 0.045)
                 time.sleep(0.08)
                 self._release_all_move_keys()
                 time.sleep(0.25)
-                self._move_horiz_to(dst[0], allow_tp=False)
+                # Get current position after portal wrap, then navigate to dst
+                live = self._get_xy()
+                start_xy = live if live is not None else dst
+                self._move_between_points(start_xy, dst)
             else:
                 # No portal used -- normal movement between points with Y adjustment.
                 time.sleep(0.15)

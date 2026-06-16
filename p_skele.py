@@ -2251,30 +2251,31 @@ class PetrisACW:
                         current = 'P1'
 
                 else:
-                    # Timer expired — go to P3 once, then back to P1, reset timer
+                    # Timer expired — go to P3 once, then back to P2, reset timer
                     # P1, P2, P3 are all on the same platform — no climbing needed
                     print("[ROTATION] P3 visit phase: going to P3 once.")
                     p3 = self.points.get('P3')
                     if p3:
                         self._move_horiz_to(p3[0], allow_tp=True)
                         self._arrive_and_cast('P3')
-                        print("[ROTATION] P3 cast complete. Moving back to P1.")
-                    # Move back to P1 via P3_POST_TP safe spot if configured.
-                    # Walk (no TP) to the safe post-P3 spot first, then LEFT+TP to P1.
+                        print("[ROTATION] P3 cast complete. Returning to P2.")
+                    # Return to P2 via P3_POST_TP safe spot if configured.
+                    # Walk (no TP) to the safe post-P3 spot first, then LEFT+TP toward P2/P1.
                     # This prevents accidental teleport-down to platform B.
                     p3_post = self.points.get('P3_POST_TP')
                     if p3_post:
-                        print(f"[ROTATION] Walking to P3_POST_TP safe spot ({p3_post[0]:.3f}, {p3_post[1]:.3f}) then LEFT+TP to P1.")
+                        print(f"[ROTATION] Walking to P3_POST_TP safe spot ({p3_post[0]:.3f}, {p3_post[1]:.3f}) then LEFT+TP.")
                         self._move_horiz_to(p3_post[0], allow_tp=False)
                         self.ctrl.teleport('left', taps=1)
-                    # Final approach to P1
-                    p1 = self.points.get('P1')
-                    if p1:
-                        self._move_horiz_to(p1[0], allow_tp=False)
+                    # Go to P2, cast there, then continue P2->P1->P2 loop.
+                    p2 = self.points.get('P2')
+                    if p2:
+                        self._move_horiz_to(p2[0], allow_tp=False)
+                        self._arrive_and_cast('P2')
                     # Always reset timer so we go back to P1-P2 loop
                     self.rotation_start_time = time.time()
                     current = 'P1'
-                    print(f"[ROTATION] Timer reset. Back to P1-P2 loop for {CFG.dynamic_rotation_short_phase_duration}s.")
+                    print(f"[ROTATION] P2 cast complete. Timer reset. Back to P1-P2 loop for {CFG.dynamic_rotation_short_phase_duration}s.")
             else:
                 # Original behavior if dynamic rotation is not enabled
                 current = self._advance_from(current)

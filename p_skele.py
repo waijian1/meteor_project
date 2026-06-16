@@ -173,7 +173,7 @@ class Config:
     # if True, enable dynamic rotation logic (P1-P2 for X min, then P1-P4)
     dynamic_rotation_enabled: bool = True
     # Time in seconds for the initial short rotation (e.g., P1-P2 only)
-    dynamic_rotation_short_phase_duration: float = 60.0  # e.g., 3 minutes
+    dynamic_rotation_short_phase_duration: float = 30.0  # e.g., 3 minutes
     # If True, P3/P4 will be skipped if short phase duration is not reached.
     skip_p3_p4_during_short_phase: bool = True
     # Custom delays for P3 and P4 when in the full rotation phase
@@ -2167,7 +2167,7 @@ class PetrisACW:
         # NEW: Initialize rotation timer
         self.rotation_start_time = time.time()
         if CFG.dynamic_rotation_enabled:
-            print(f"[ROTATION] Dynamic rotation enabled. Short phase (P1-P2) for {CFG.dynamic_rotation_short_phase_duration} seconds.")
+            print(f"[ROTATION] Dynamic rotation enabled. Looping P1-P2, visiting P3 every {CFG.dynamic_rotation_short_phase_duration} seconds.")
 
         # Optional one-time pre-cast sequence before first movement/cast.
         self._run_startup_keys()
@@ -2191,26 +2191,19 @@ class PetrisACW:
                 self.override_next = None
                 continue
 
-            # NEW: Dynamic rotation logic
+            # NEW: Dynamic rotation logic — P1-P2 loop with periodic P3 visit
             if CFG.dynamic_rotation_enabled:
                 elapsed_time = time.time() - self.rotation_start_time
                 if elapsed_time < CFG.dynamic_rotation_short_phase_duration:
-                    # Short phase: P1 -> P2 -> P1
+                    # Short phase: P1 -> P2 -> P1 (loop)
                     if current == 'P1':
                         print("[ROTATION] Short phase: P1 -> P2")
                         current = self._advance_from('P1')
                     elif current == 'P2':
                         print("[ROTATION] Short phase: P2 -> P1")
-                        # Instead of advancing to P3, we explicitly go back to P1
                         self._move_horiz_to(self.points.get('P1')[0], allow_tp=True)
                         self._arrive_and_cast('P1')
                         current = 'P1'
-                    # elif current == 'P3':
-                    #     print("[ROTATION] Short phase: P3 -> P1")
-                    #     # Instead of advancing to P4, we explicitly go back to P1
-                    #     self._move_horiz_to(self.points.get('P1')[0], allow_tp=True)
-                    #     self._arrive_and_cast('P1')
-                    #     current = 'P1'
                     else:
                         # If we somehow end up at P3 or P4 during short phase, reroute to P1
                         print(f"[ROTATION] Unexpected point {current} during short phase. Rerouting to P1.")
@@ -2219,22 +2212,28 @@ class PetrisACW:
                         current = 'P1'
 
                 else:
-                    # Full rotation: P1 -> P2 -> P3 -> P4 -> P1
-                    if elapsed_time - CFG.dynamic_rotation_short_phase_duration < 1.0: # Only print once
-                         print("[ROTATION] Full rotation phase activated.")
-                    current = self._advance_from(current)
-
-                    # After completing one full rotation (P4 -> P1), reset timer
-                    if current == 'P1':
-                        # Check if the next expected point in full rotation is P2. If so, it means a full cycle (P1->P4->P1) completed.
-                        # Guard for maps that only have P1/P2 (no P4)
-                        route = self._route_points()
-                        names = [name for name, _ in route]
-                        if 'P4' in names:
-                            idx = names.index('P4')
-                            if names[(idx + 1) % len(names)] == 'P1':
-                                print("[ROTATION] Full rotation completed. Resetting timer for short phase.")
-                                self.rotation_start_time = time.time()
+                    # Timer expired — go to P3 once, then back to P1, reset timer
+                    print("[ROTATION] P3 visit phase: going to P3 once.")
+                    # Climb to P3 from current position (assumes we're at P1 or P2 on same platform)
+                    p3 = self.points.get('P3')
+                    if p3:
+                        self._goto_preclimb_anchor('left')
+                        ok = self._grab_rope_and_climb(target_y=p3[1], max_secs=3.5, force_side='left')
+                        if ok:
+                            self._move_horiz_to(p3[0], allow_tp=False)
+                            self._arrive_and_cast('P3')
+                            print("[ROTATION] P3 cast complete. Dropping back to P1.")
+                        else:
+                            print("[ROTATION] P3 climb failed; falling back to P1.")
+                    # Drop back down to P1
+                    p1 = self.points.get('P1')
+                    if p1:
+                        self._drop_down_to_y(p1[1])
+                        self._move_horiz_to(p1[0])
+                    # Always reset timer so we go back to P1-P2 loop
+                    self.rotation_start_time = time.time()
+                    current = 'P1'
+                    print(f"[ROTATION] Timer reset. Back to P1-P2 loop for {CFG.dynamic_rotation_short_phase_duration}s.")
             else:
                 # Original behavior if dynamic rotation is not enabled
                 current = self._advance_from(current)

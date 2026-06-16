@@ -173,7 +173,7 @@ class Config:
     # if True, enable dynamic rotation logic (P1-P2 for X min, then P1-P4)
     dynamic_rotation_enabled: bool = True
     # Time in seconds for the initial short rotation (e.g., P1-P2 only)
-    dynamic_rotation_short_phase_duration: float = 180.0  # e.g., 3 minutes
+    dynamic_rotation_short_phase_duration: float = 60.0  # e.g., 3 minutes
     # If True, P3/P4 will be skipped if short phase duration is not reached.
     skip_p3_p4_during_short_phase: bool = True
     # Custom delays for P3 and P4 when in the full rotation phase

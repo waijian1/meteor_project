@@ -2200,14 +2200,17 @@ class PetrisACW:
                         print("[ROTATION] Short phase: P1 -> P2")
                         current = self._advance_from('P1')
                     elif current == 'P2':
-                        print("[ROTATION] Short phase: P2 -> P3")
-                        current = self._advance_from('P2')
-                    elif current == 'P3':
-                        print("[ROTATION] Short phase: P3 -> P1")
-                        # Instead of advancing to P4, we explicitly go back to P1
+                        print("[ROTATION] Short phase: P2 -> P1")
+                        # Instead of advancing to P3, we explicitly go back to P1
                         self._move_horiz_to(self.points.get('P1')[0], allow_tp=True)
                         self._arrive_and_cast('P1')
                         current = 'P1'
+                    # elif current == 'P3':
+                    #     print("[ROTATION] Short phase: P3 -> P1")
+                    #     # Instead of advancing to P4, we explicitly go back to P1
+                    #     self._move_horiz_to(self.points.get('P1')[0], allow_tp=True)
+                    #     self._arrive_and_cast('P1')
+                    #     current = 'P1'
                     else:
                         # If we somehow end up at P3 or P4 during short phase, reroute to P1
                         print(f"[ROTATION] Unexpected point {current} during short phase. Rerouting to P1.")

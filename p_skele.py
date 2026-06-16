@@ -1427,19 +1427,6 @@ class PetrisACW:
             self._dismount_to_platform(target_y)
             return True
 
-        # Cast Meteor once at the rope anchor before climbing (clear spawns underneath)
-        print(f'[RECOVER] Casting Meteor once before rope climb {from_level}->{to_level}.')
-        self.ctrl.cast_meteor()
-        time.sleep(0.3)
-
-        # Re-align to the recovery anchor after Meteor cast (prevents knockback drift)
-        if side and left and right:
-            anchor = left if side == 'left' else right
-            self._recover_move_to_anchor_x(anchor[0])
-        elif side and (left or right):
-            anchor = left or right
-            self._recover_move_to_anchor_x(anchor[0])
-
         # Bypass _grab_rope_and_climb (its retry loop uses ROPE_PRE_L on wrong platform).
         # Do a direct rope grab + climb from the recovery anchor position.
         if side:

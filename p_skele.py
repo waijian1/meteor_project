@@ -1432,6 +1432,14 @@ class PetrisACW:
         self.ctrl.cast_meteor()
         time.sleep(0.3)
 
+        # Re-align to the recovery anchor after Meteor cast (prevents knockback drift)
+        if side and left and right:
+            anchor = left if side == 'left' else right
+            self._recover_move_to_anchor_x(anchor[0])
+        elif side and (left or right):
+            anchor = left or right
+            self._recover_move_to_anchor_x(anchor[0])
+
         if side:
             ok = self._grab_rope_and_climb(
                 target_y=target_y,

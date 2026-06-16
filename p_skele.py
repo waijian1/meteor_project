@@ -1438,7 +1438,7 @@ class PetrisACW:
                     # Climb confirmed — hold UP and tap TP until target_y reached
                     y_last = (self._get_xy() or (0, 0))[1]
                     last_improve = time.time()
-                    deadline = time.time() + 4.5
+                    deadline = time.time() + 5.0
                     last_tp_tap = time.time()
                     while time.time() < deadline:
                         if keyboard.is_pressed('esc'): raise KeyboardInterrupt
@@ -2259,10 +2259,18 @@ class PetrisACW:
                         self._move_horiz_to(p3[0], allow_tp=True)
                         self._arrive_and_cast('P3')
                         print("[ROTATION] P3 cast complete. Moving back to P1.")
-                    # Move back to P1 (same platform — horizontal only)
+                    # Move back to P1 via P3_POST_TP safe spot if configured.
+                    # Walk (no TP) to the safe post-P3 spot first, then LEFT+TP to P1.
+                    # This prevents accidental teleport-down to platform B.
+                    p3_post = self.points.get('P3_POST_TP')
+                    if p3_post:
+                        print(f"[ROTATION] Walking to P3_POST_TP safe spot ({p3_post[0]:.3f}, {p3_post[1]:.3f}) then LEFT+TP to P1.")
+                        self._move_horiz_to(p3_post[0], allow_tp=False)
+                        self.ctrl.teleport('left', taps=1)
+                    # Final approach to P1
                     p1 = self.points.get('P1')
                     if p1:
-                        self._move_horiz_to(p1[0], allow_tp=True)
+                        self._move_horiz_to(p1[0], allow_tp=False)
                     # Always reset timer so we go back to P1-P2 loop
                     self.rotation_start_time = time.time()
                     current = 'P1'
@@ -2408,6 +2416,7 @@ def main():
     keyboard.add_hotkey('f1', lambda: set_point('P1'))
     keyboard.add_hotkey('f2', lambda: set_point('P2'))
     keyboard.add_hotkey('f3', lambda: set_point('P3'))
+    keyboard.add_hotkey('ctrl+f3', lambda: set_point('P3_POST_TP'))
     keyboard.add_hotkey('f4', lambda: set_point('P4'))
     for i in range(1, 10):
         keyboard.add_hotkey(f'ctrl+{i}', lambda n=i: set_point(f'P{n}'))

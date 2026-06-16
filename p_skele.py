@@ -1440,13 +1440,50 @@ class PetrisACW:
             anchor = left or right
             self._recover_move_to_anchor_x(anchor[0])
 
+        # Bypass _grab_rope_and_climb (its retry loop uses ROPE_PRE_L on wrong platform).
+        # Do a direct rope grab + climb from the recovery anchor position.
         if side:
-            ok = self._grab_rope_and_climb(
-                target_y=target_y,
-                max_secs=4.5,
-                force_side=side,
-                use_preclimb_anchor=False,
-            )
+            toward = 'right' if side == 'left' else 'left'
+            ok = False
+            for _ in range(3):
+                # Attempt rope grab from current anchor position
+                if self._attempt_rope_grab_sticky(toward):
+                    # Climb confirmed — hold UP and tap TP until target_y reached
+                    y_last = (self._get_xy() or (0, 0))[1]
+                    last_improve = time.time()
+                    deadline = time.time() + 4.5
+                    last_tp_tap = time.time()
+                    while time.time() < deadline:
+                        if keyboard.is_pressed('esc'): raise KeyboardInterrupt
+                        xy = self._get_xy()
+                        if not xy: time.sleep(0.02); continue
+                        y = xy[1]
+                        if y <= target_y + CFG.tol_y:
+                            ok = True
+                            break
+                        now = time.time()
+                        if (now - last_tp_tap) >= rand(CFG.tp_min_interval, CFG.tp_max_interval):
+                            self.ctrl.tp_pulse()
+                            last_tp_tap = now
+                        if (y_last - y) > 0.001:
+                            y_last = y
+                            last_improve = time.time()
+                        if time.time() - last_improve > 0.7:
+                            break
+                        time.sleep(0.02)
+                    _arrow_up('up')
+                    if ok:
+                        break
+                # Grab failed — stay on anchor, release, retry
+                _arrow_up('up')
+                time.sleep(0.08)
+                # Re-align to anchor without moving to wrong platform
+                if side and left and right:
+                    anchor = left if side == 'left' else right
+                    self._recover_move_to_anchor_x(anchor[0])
+                elif side and (left or right):
+                    anchor = left or right
+                    self._recover_move_to_anchor_x(anchor[0])
         else:
             ok = self._grab_rope_and_climb(target_y=target_y, max_secs=4.5)
 

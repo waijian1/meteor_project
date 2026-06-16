@@ -126,7 +126,7 @@ class Config:
     tol_y: float = 0.03   # same for Y
     move_tick: float = 0.08  # sleep between movement ticks
     debug: bool = False
-    cast_lock_secs: float = 3
+    cast_lock_secs: float = 2.5
     climb_extra_hold_secs: float = 0.8  # keep UP a bit longer after reaching P3-Y
     tp_min_interval: float = 0.18     # glide TP pulse interval range
     tp_max_interval: float = 0.25
@@ -1427,6 +1427,11 @@ class PetrisACW:
             self._dismount_to_platform(target_y)
             return True
 
+        # Cast Meteor once at the rope anchor before climbing (clear spawns underneath)
+        print(f'[RECOVER] Casting Meteor once before rope climb {from_level}->{to_level}.')
+        self.ctrl.cast_meteor()
+        time.sleep(0.3)
+
         if side:
             ok = self._grab_rope_and_climb(
                 target_y=target_y,
@@ -1517,10 +1522,12 @@ class PetrisACW:
         #     if tgt:
         #         self._move_horiz_to(tgt[0], allow_tp=False)
 
-        # Always reset rotation back to P1 after recovery
-        p1 = self.points.get('P2')
+        # After recovery, go to P1 and reset the rotation timer
+        p1 = self.points.get('P1')
         if p1:
-            self._move_horiz_to(p1[0], allow_tp=False)
+            self._move_horiz_to(p1[0], allow_tp=True)
+        print('[RECOVER] Recovery complete. Resetting rotation back to P1.')
+        self.rotation_start_time = time.time()
         return True
 
     # ---------- Rescue if at bottom platform ----------

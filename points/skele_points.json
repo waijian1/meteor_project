@@ -30,8 +30,8 @@
   "RECOVER_B_TO_C_R": [
     0.4189189189189189,
     0.8465909090909091
+  ],
+  "double_cast_points": [
+    "P3"
   ]
-  // "double_cast_points": [
-  //   "P3"
-  // ]
 }

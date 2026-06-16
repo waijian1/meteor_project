@@ -2213,23 +2213,17 @@ class PetrisACW:
 
                 else:
                     # Timer expired — go to P3 once, then back to P1, reset timer
+                    # P1, P2, P3 are all on the same platform — no climbing needed
                     print("[ROTATION] P3 visit phase: going to P3 once.")
-                    # Climb to P3 from current position (assumes we're at P1 or P2 on same platform)
                     p3 = self.points.get('P3')
                     if p3:
-                        self._goto_preclimb_anchor('left')
-                        ok = self._grab_rope_and_climb(target_y=p3[1], max_secs=3.5, force_side='left')
-                        if ok:
-                            self._move_horiz_to(p3[0], allow_tp=False)
-                            self._arrive_and_cast('P3')
-                            print("[ROTATION] P3 cast complete. Dropping back to P1.")
-                        else:
-                            print("[ROTATION] P3 climb failed; falling back to P1.")
-                    # Drop back down to P1
+                        self._move_horiz_to(p3[0], allow_tp=True)
+                        self._arrive_and_cast('P3')
+                        print("[ROTATION] P3 cast complete. Moving back to P1.")
+                    # Move back to P1 (same platform — horizontal only)
                     p1 = self.points.get('P1')
                     if p1:
-                        self._drop_down_to_y(p1[1])
-                        self._move_horiz_to(p1[0])
+                        self._move_horiz_to(p1[0], allow_tp=True)
                     # Always reset timer so we go back to P1-P2 loop
                     self.rotation_start_time = time.time()
                     current = 'P1'

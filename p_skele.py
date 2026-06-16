@@ -1446,6 +1446,8 @@ class PetrisACW:
                         if not xy: time.sleep(0.02); continue
                         y = xy[1]
                         if y <= target_y + CFG.tol_y:
+                            # Extra 0.5s hold UP to fully clear the lip onto the platform
+                            _arrow_hold('up', 0.5)
                             ok = True
                             break
                         now = time.time()

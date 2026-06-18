@@ -111,6 +111,35 @@ class MinimapConfig:
     w: int = 137
     h: int = 94
 
+    # --- Configurable HSV ranges for yellow player dot ---
+    # These are calibrated per-map via the color sampler tool (Ctrl+F7)
+    # Can also be edited in the minimap JSON profile file.
+    hsv_yellow_lower_h: int = 20
+    hsv_yellow_lower_s: int = 100
+    hsv_yellow_lower_v: int = 140
+    hsv_yellow_upper_h: int = 40
+    hsv_yellow_upper_s: int = 255
+    hsv_yellow_upper_v: int = 255
+
+    # --- Configurable HSV ranges for white elements (when yellow_only=False) ---
+    hsv_white_lower_h: int = 0
+    hsv_white_lower_s: int = 0
+    hsv_white_lower_v: int = 210
+    hsv_white_upper_h: int = 180
+    hsv_white_upper_s: int = 60
+    hsv_white_upper_v: int = 255
+
+    # --- Circularity filter ---
+    # Higher = more strictly circular (1.0 = perfect circle).
+    # The player dot is very circular; other characters are not.
+    # Set to 0 to disable circularity filter.
+    circularity_min: float = 0.70
+    # --- Size filter (fraction of minimap area) ---
+    min_area_fraction: float = 0.00015
+    max_area_fraction: float = 0.0040
+    # --- Edge margin (pixels) to reject contours touching minimap border ---
+    edge_margin: int = 2
+
 
 @dataclass
 class Config:
@@ -230,28 +259,71 @@ def configure_map_points_file(map_name: str):
     CFG.minimap_file = os.path.join('minimap', f'{map_name}_minimap.json')
 
 
-def save_minimap_profile():
+def save_minimap_profile(mm_tracker: 'MinimapTracker' = None):
+    """Save minimap config. Optionally pass a MinimapTracker to persist exclusion zones."""
     folder = os.path.dirname(CFG.minimap_file)
     if folder:
         os.makedirs(folder, exist_ok=True)
+    data = asdict(CFG.minimap)
+    # Persist exclusion zones if we have a tracker
+    if mm_tracker is not None and hasattr(mm_tracker, 'exclusion_zones'):
+        data['exclusion_zones'] = [list(z) for z in mm_tracker.exclusion_zones]
     with open(CFG.minimap_file, 'w') as f:
-        json.dump(asdict(CFG.minimap), f, indent=2)
+        json.dump(data, f, indent=2)
     print(f'[TUNE] Saved minimap profile -> {CFG.minimap_file}')
+    if mm_tracker and mm_tracker.exclusion_zones:
+        print(f'[TUNE]   Saved {len(mm_tracker.exclusion_zones)} exclusion zone(s)')
 
 
-def load_minimap_profile():
+def load_minimap_profile(mm_tracker: 'MinimapTracker' = None):
+    """Load minimap config. Optionally pass a MinimapTracker to restore exclusion zones."""
     if not os.path.exists(CFG.minimap_file):
         print(f'[TUNE] No minimap profile found, using defaults: {CFG.minimap_file}')
         return
     try:
         with open(CFG.minimap_file, 'r') as f:
             data = json.load(f)
+        # Load ROI keys
         for key in ('x', 'y', 'w', 'h'):
             if key in data:
                 setattr(CFG.minimap, key, int(data[key]))
+        # Load HSV keys for yellow dot
+        hsv_yellow_keys = ['hsv_yellow_lower_h', 'hsv_yellow_lower_s', 'hsv_yellow_lower_v',
+                           'hsv_yellow_upper_h', 'hsv_yellow_upper_s', 'hsv_yellow_upper_v']
+        for key in hsv_yellow_keys:
+            if key in data:
+                setattr(CFG.minimap, key, int(data[key]))
+        # Load white HSV keys
+        hsv_white_keys = ['hsv_white_lower_h', 'hsv_white_lower_s', 'hsv_white_lower_v',
+                          'hsv_white_upper_h', 'hsv_white_upper_s', 'hsv_white_upper_v']
+        for key in hsv_white_keys:
+            if key in data:
+                setattr(CFG.minimap, key, int(data[key]))
+        # Load filter keys
+        for key in ('circularity_min', 'min_area_fraction', 'max_area_fraction'):
+            if key in data:
+                setattr(CFG.minimap, key, float(data[key]))
+        # Load exclusion zones
+        if mm_tracker is not None and 'exclusion_zones' in data:
+            loaded = 0
+            for z in data['exclusion_zones']:
+                if isinstance(z, (list, tuple)) and len(z) == 2:
+                    mm_tracker.exclusion_zones.append(tuple(z))
+                    loaded += 1
+            if loaded:
+                print(f'[TUNE]   Loaded {loaded} exclusion zone(s)')
         print(
             '[TUNE] Loaded minimap profile from '
-            f'{CFG.minimap_file}: x={CFG.minimap.x} y={CFG.minimap.y} w={CFG.minimap.w} h={CFG.minimap.h}'
+            f'{CFG.minimap_file}: x={CFG.minimap.x} y={CFG.minimap.y} '
+            f'w={CFG.minimap.w} h={CFG.minimap.h}'
+        )
+        print(
+            f'[TUNE]   HSV yellow: ({CFG.minimap.hsv_yellow_lower_h},{CFG.minimap.hsv_yellow_lower_s},{CFG.minimap.hsv_yellow_lower_v}) -> '
+            f'({CFG.minimap.hsv_yellow_upper_h},{CFG.minimap.hsv_yellow_upper_s},{CFG.minimap.hsv_yellow_upper_v})'
+        )
+        print(
+            f'[TUNE]   Circularity min: {CFG.minimap.circularity_min}, '
+            f'area fraction: {CFG.minimap.min_area_fraction}..{CFG.minimap.max_area_fraction}'
         )
     except Exception as e:
         print(f'[TUNE] Failed to load minimap profile ({CFG.minimap_file}): {e}')
@@ -369,6 +441,19 @@ class MinimapTracker:
         self.gw = gw
         self.last_xy: Optional[Tuple[float, float]] = None  # normalized [0..1]
         self.yellow_only = True  # F11 will toggle this
+        self.exclusion_zones: List[Tuple[float, float]] = []  # normalized [0..1] positions to ignore
+        self.exclusion_radius: float = 0.015  # normalized radius around each exclusion point
+
+    def add_exclusion_zone(self, xy: Tuple[float, float], auto_save: bool = True):
+        """Add a position to ignore (e.g., other character dot that looks like the player)."""
+        self.exclusion_zones.append(xy)
+        print(f'[EXCL] Added exclusion zone at {xy}. Total: {len(self.exclusion_zones)}')
+        if auto_save:
+            save_minimap_profile(self)
+
+    def clear_exclusion_zones(self):
+        self.exclusion_zones.clear()
+        print('[EXCL] All exclusion zones cleared.')
 
     def get_player_xy(self) -> Optional[Tuple[float, float]]:
         img = self.gw.capture(self.gw.minimap_roi())
@@ -376,13 +461,19 @@ class MinimapTracker:
             return None
 
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        m = CFG.minimap
 
-        # Primary: yellow (player icon). Fallback include white if toggled off.
-        yellow = cv2.inRange(hsv, (18, 80, 140), (42, 255, 255))  # tuneable
+        # --- Use configurable HSV ranges from MinimapConfig ---
+        yellow_lower = (m.hsv_yellow_lower_h, m.hsv_yellow_lower_s, m.hsv_yellow_lower_v)
+        yellow_upper = (m.hsv_yellow_upper_h, m.hsv_yellow_upper_s, m.hsv_yellow_upper_v)
+        yellow = cv2.inRange(hsv, yellow_lower, yellow_upper)
+
         if self.yellow_only:
             mask = yellow
         else:
-            white  = cv2.inRange(hsv, (0, 0, 210), (180, 60, 255))
+            white_lower = (m.hsv_white_lower_h, m.hsv_white_lower_s, m.hsv_white_lower_v)
+            white_upper = (m.hsv_white_upper_h, m.hsv_white_upper_s, m.hsv_white_upper_v)
+            white = cv2.inRange(hsv, white_lower, white_upper)
             mask = cv2.bitwise_or(yellow, white)
 
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
@@ -394,58 +485,124 @@ class MinimapTracker:
                 cv2.imshow('minimap_mask', mask); cv2.waitKey(1)
             return None
 
-        h, w = mask.shape
-        area = w * h
-        # Keep only "dot-like" blobs
-        minA = max(4, int(0.0005 * area))   # ~0.05%
-        maxA = int(0.010  * area)           # ~1.0%
+        h_map, w_map = mask.shape
+        total_area = w_map * h_map
+        minA = max(4, int(m.min_area_fraction * total_area))
+        maxA = int(m.max_area_fraction * total_area)
 
-        cands = []
-        edge_margin = 5
+        edge_margin = m.edge_margin
+
+        # Reference position for scoring
+        if self.last_xy is not None:
+            ref_x = self.last_xy[0] * w_map
+            ref_y = self.last_xy[1] * h_map
+        else:
+            ref_x = w_map / 2
+            ref_y = h_map / 2
+
+        # Collect all valid candidates with their scores and exclusion status
+        candidates = []
+
         for c in contours:
             a = cv2.contourArea(c)
             if a < minA or a > maxA:
                 continue
             x, y, ww, hh = cv2.boundingRect(c)
-            # reject anything touching the border (buildings/portals/platforms)
             if x <= edge_margin or y <= edge_margin or \
-               (x + ww) >= (w - edge_margin) or (y + hh) >= (h - edge_margin):
+               (x + ww) >= (w_map - edge_margin) or (y + hh) >= (h_map - edge_margin):
                 continue
             (cx, cy), r = cv2.minEnclosingCircle(c)
-            cands.append((cx, cy, r, c))
 
-        # Fallback to smallest contour if nothing passed the filters
-        if not cands:
-            c = min(contours, key=cv2.contourArea)
-            (cx, cy), r = cv2.minEnclosingCircle(c)
-        else:
-            # Score candidates: prefer near last_xy (or center if first), and away from edges
-            if self.last_xy is not None:
-                lx, ly = self.last_xy[0] * w, self.last_xy[1] * h
-                def score(t):
-                    cx, cy = t[0], t[1]
-                    d2 = (cx - lx) ** 2 + (cy - ly) ** 2
-                    border_pen = (min(cx, w-cx, cy, h-cy) < 10) * 1e6
-                    return d2 + border_pen
+            # Check if near exclusion zone
+            cx_norm, cy_norm = cx / w_map, cy / h_map
+            is_excluded = False
+            for ez in self.exclusion_zones:
+                edx = cx_norm - ez[0]
+                edy = cy_norm - ez[1]
+                if (edx*edx + edy*edy) ** 0.5 < self.exclusion_radius:
+                    is_excluded = True
+                    break
+
+            # Circularity check: the player dot is circular; other characters are not
+            if m.circularity_min > 0:
+                perimeter = cv2.arcLength(c, True)
+                if perimeter > 0:
+                    circularity = 4.0 * np.pi * a / (perimeter * perimeter)
+                else:
+                    circularity = 0
+                if circularity < m.circularity_min:
+                    continue
+
+            dx_px = cx - ref_x
+            dy_px = cy - ref_y
+            dist = (dx_px * dx_px + dy_px * dy_px) ** 0.5
+            max_dist = (w_map * w_map + h_map * h_map) ** 0.5 / 2
+            dist_score = dist / max(1.0, max_dist)
+            side_ratio = max(ww, hh) / max(1, min(ww, hh))
+            shape_penalty = min(2.0, (side_ratio - 1.0) * 0.5)
+            expected_area = (minA + maxA) / 2
+            size_bonus = 1.0 - min(1.0, abs(a - expected_area) / expected_area) * 0.3
+            score_val = dist_score - (size_bonus * 0.15) + (shape_penalty * 0.05)
+
+            candidates.append((score_val, is_excluded, cx, cy, r, c))
+
+        # Two-pass: ALWAYS prefer non-excluded candidates first.
+        # Only fall back to excluded candidates if no non-excluded dot exists.
+        best_score = float('inf')
+        best_cx = None
+        best_cy = None
+        best_r = None
+        best_c = None
+        best_excluded_score = float('inf')
+        best_excluded_cx = best_excluded_cy = best_excluded_r = None
+        best_excluded_c = None
+
+        for score_val, is_excluded, cx, cy, r, c in candidates:
+            if is_excluded:
+                if score_val < best_excluded_score:
+                    best_excluded_score = score_val
+                    best_excluded_cx, best_excluded_cy, best_excluded_r = cx, cy, r
+                    best_excluded_c = c
             else:
-                def score(t):
-                    cx, cy = t[0], t[1]
-                    d2 = (cx - w/2) ** 2 + (cy - h/2) ** 2
-                    border_pen = (min(cx, w-cx, cy, h-cy) < 10) * 1e6
-                    return d2 + border_pen
+                if score_val < best_score:
+                    best_score = score_val
+                    best_cx, best_cy, best_r, best_c = cx, cy, r, c
 
-            cands.sort(key=score)
-            cx, cy, r, _ = cands[0]
+        if best_c is None and best_excluded_c is not None:
+            best_cx, best_cy, best_r, best_c = best_excluded_cx, best_excluded_cy, best_excluded_r, best_excluded_c
+            best_score = best_excluded_score
 
-        x_norm, y_norm = cx / w, cy / h
+        if best_c is not None:
+            cx, cy, r = best_cx, best_cy, best_r
+        else:
+            if CFG.debug:
+                cv2.imshow('minimap_debug', img)
+                cv2.imshow('minimap_mask', mask); cv2.waitKey(1)
+            self.last_xy = None
+            return None
+
+        x_norm, y_norm = cx / w_map, cy / h_map
         self.last_xy = (x_norm, y_norm)
 
         if CFG.debug:
             dbg = img.copy()
-            # draw candidates (green) and chosen one (red)
-            for (ux, uy, ur, cc) in cands:
-                cv2.circle(dbg, (int(ux), int(uy)), max(2, int(ur)), (0, 255, 0), 1)
-            cv2.circle(dbg, (int(cx), int(cy)), max(3, int(r)), (0, 0, 255), 2)
+            # Draw exclusion zones
+            for ez in self.exclusion_zones:
+                ez_px = (int(ez[0] * w_map), int(ez[1] * h_map))
+                ez_rad = int(self.exclusion_radius * w_map)
+                cv2.circle(dbg, ez_px, ez_rad, (255, 0, 255), 1)
+                cv2.putText(dbg, 'X', ez_px, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+            # Draw all contours that passed the size filter (in green)
+            for c in contours:
+                a_tmp = cv2.contourArea(c)
+                if a_tmp < minA or a_tmp > maxA:
+                    continue
+                cv2.drawContours(dbg, [c], -1, (0, 255, 0), 1)
+            # Draw the chosen one (in red)
+            if best_c is not None:
+                cv2.circle(dbg, (int(cx), int(cy)), max(3, int(r)), (0, 0, 255), 2)
+                cv2.putText(dbg, f'Score:{best_score:.2f}', (5, 15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
             cv2.imshow('minimap_debug', dbg)
             cv2.imshow('minimap_mask', mask)
             cv2.waitKey(1)
@@ -2363,9 +2520,9 @@ def main():
     args = parser.parse_args()
     map_name = sanitize_map_name(args.map_name)
     configure_map_points_file(map_name)
-    load_minimap_profile()
-
+    # Create bot first so we have access to the tracker for loading exclusion zones
     bot = PetrisACW()
+    load_minimap_profile(bot.mm)
     start_stuck_watchdog(bot.mm)
     # start auto-focus watchdog
     autof = AutoFocus(bot.gw, enabled=CFG.auto_focus_enabled, period=CFG.auto_focus_period)
@@ -2386,6 +2543,7 @@ def main():
     print('  F9      -> Save points to file')
     print('  F6      -> Toggle minimap debug viewer (ROI, mask, detected dot)')
     print('  F7      -> Toggle LIVE minimap preview')
+    print('  Ctrl+F7 -> Color sampler: auto-calibrate HSV range for the yellow dot')
     print('  F8      -> ROI tuner (adjust minimap crop live)')
     print('  F11     -> Toggle yellow-only detection')
     print('  F10     -> Set ROPE_PRE_L (before-rope jump, left side)')
@@ -2396,6 +2554,8 @@ def main():
     print('  Alt+F1/F2 -> Set RECOVER_B_TO_C_L / RECOVER_B_TO_C_R')
     print('  Alt+F3/F4 -> Set RECOVER_A_TO_B_L / RECOVER_A_TO_B_R')
     print('  Shift+F1..Shift+F9 -> Set T1..T9 (map portal tile; edges use T1, T2, ... along route order)')
+    print('  Ctrl+F1  -> Add exclusion zone (mark current wrong detection as noise)')
+    print('  Ctrl+F2  -> Clear all exclusion zones')
     print('  F5      -> Start/Stop routine')
     print('  ESC     -> Emergency stop')
     print('  Ctrl+Alt+F -> Toggle auto-focus game window')
@@ -2405,12 +2565,8 @@ def main():
     print('  (Replace P1, P2 with the points you want double-cast at.)')
 
     def toggle_dbg():
-        CFG.debug = not CFG.debug
-        print(f"[DBG] minimap debug = {CFG.debug}")
-        if not CFG.debug:
-            for w in ('minimap_debug', 'minimap_mask'):
-                try: cv2.destroyWindow(w)
-                except: pass
+        """Toggle live minimap preview (same as F7 but bound to F6 for convenience)."""
+        toggle_preview(bot)
 
     def set_rope_pre(side):
         xy = bot.mm.get_player_xy()
@@ -2455,6 +2611,18 @@ def main():
     keyboard.add_hotkey('f10', lambda: set_rope_pre('L'))  # record left pre-climb
     keyboard.add_hotkey('f12', lambda: set_rope_pre('R'))  # record right pre-climb
     keyboard.add_hotkey('f11', lambda: setattr(bot.mm, 'yellow_only', not bot.mm.yellow_only))
+    # ===== Exclusion Zone Hotkeys =====
+    def add_noise_exclusion():
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print('[EXCL] Could not detect any blob to exclude.')
+            return
+        bot.mm.add_exclusion_zone(xy)
+        # Re-trigger display to show updated detection
+        bot.mm.get_player_xy()
+    keyboard.add_hotkey('ctrl+f1', add_noise_exclusion)  # mark current wrong-detection as noise
+    keyboard.add_hotkey('ctrl+f2', lambda: (bot.mm.clear_exclusion_zones(), bot.mm.get_player_xy()))
+    # ===== End Exclusion Zone =====
     keyboard.add_hotkey('ctrl+f10', lambda: set_rescue_pre('L'))  # rescue anchor on left rope (bottom)
     keyboard.add_hotkey('ctrl+f12', lambda: set_rescue_pre('R'))  # rescue anchor on right rope (bottom)
     keyboard.add_hotkey('ctrl+shift+c', lambda: set_platform_ref('C'))
@@ -2512,12 +2680,141 @@ def main():
             k = cv2.waitKey(30) & 0xFF
             if k in (13, 10):  # Enter
                 print(f"[TUNE] Saved ROI: x={m.x} y={m.y} w={m.w} h={m.h}")
-                save_minimap_profile()
+                save_minimap_profile(bot.mm)
                 cv2.destroyWindow('roi_tuner')
                 break
             if k == 27:  # Esc
                 cv2.destroyWindow('roi_tuner')
                 break
+
+    # =================== Color Sampler (Ctrl+F7) ======================
+    def color_sampler():
+        """
+        Samples the current pixel color under the detected player dot on the minimap
+        and updates CFG.minimap HSV values to match it exactly (with a small tolerance).
+        
+        HOW TO USE:
+        1. Stand still on a clear part of the minimap where your yellow dot is visible.
+        2. Press Ctrl+F7. The tool will capture the minimap, find the dot, sample its
+           exact HSV color, and update the config with a narrow range around it.
+        3. Then press F9 (save minimap profile) to persist the new HSV values for this map.
+        """
+        print('[SAMPLER] Capturing minimap to calibrate yellow dot color...')
+        img = bot.gw.capture(bot.gw.minimap_roi())
+        if img is None or img.size == 0:
+            print('[SAMPLER] Failed to capture minimap.')
+            return
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+        # Use existing mask to find the dot position
+        m = CFG.minimap
+        yellow_lower = (m.hsv_yellow_lower_h, m.hsv_yellow_lower_s, m.hsv_yellow_lower_v)
+        yellow_upper = (m.hsv_yellow_upper_h, m.hsv_yellow_upper_s, m.hsv_yellow_upper_v)
+        mask = cv2.inRange(hsv, yellow_lower, yellow_upper)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            print('[SAMPLER] Could not detect any yellow dot with current HSV settings.')
+            print('[SAMPLER] Try moving to a clear area and ensuring the debug preview shows your dot.')
+            return
+
+        # Pick the largest non-border contour (most likely the player dot)
+        hh, ww = mask.shape
+        edge_margin = 5
+        best_c = None
+        best_area = 0
+        for c in contours:
+            a = cv2.contourArea(c)
+            x, y, w_c, h_c = cv2.boundingRect(c)
+            if x <= edge_margin or y <= edge_margin or \
+               (x + w_c) >= (ww - edge_margin) or (y + h_c) >= (hh - edge_margin):
+                continue
+            if a > best_area:
+                best_area = a
+                best_c = c
+
+        if best_c is None:
+            print('[SAMPLER] No suitable dot contour found (all too close to edge).')
+            return
+
+        # Get the center of the detected contour
+        M = cv2.moments(best_c)
+        if M['m00'] == 0:
+            print('[SAMPLER] Could not compute dot center.')
+            return
+        cx = int(M['m10'] / M['m00'])
+        cy = int(M['m01'] / M['m00'])
+
+        # Sample a small region around the center to get the average color
+        radius = 2
+        y1 = max(0, cy - radius)
+        y2 = min(hsv.shape[0], cy + radius + 1)
+        x1 = max(0, cx - radius)
+        x2 = min(hsv.shape[1], cx + radius + 1)
+        region = hsv[y1:y2, x1:x2]
+
+        # Only sample pixels that are actually in the contour (not background)
+        dot_mask = np.zeros(mask.shape, dtype=np.uint8)
+        cv2.drawContours(dot_mask, [best_c], -1, 255, -1)
+        dot_roi = dot_mask[y1:y2, x1:x2]
+        region_h = region[..., 0]
+        region_s = region[..., 1]
+        region_v = region[..., 2]
+
+        # Get mean HSV of just the dot pixels
+        dot_pixels = dot_roi > 0
+        if not np.any(dot_pixels):
+            print('[SAMPLER] No dot pixels in sampled region.')
+            return
+
+        mean_h = int(np.mean(region_h[dot_pixels]))
+        mean_s = int(np.mean(region_s[dot_pixels]))
+        mean_v = int(np.mean(region_v[dot_pixels]))
+
+        # Set a tight range around the sampled color (±5 H, ±30 S, ±30 V)
+        h_offset = 5
+        s_offset = 30
+        v_offset = 30
+
+        new_lower_h = max(0, mean_h - h_offset)
+        new_lower_s = max(0, mean_s - s_offset)
+        new_lower_v = max(0, mean_v - v_offset)
+        new_upper_h = min(180, mean_h + h_offset)
+        new_upper_s = min(255, mean_s + s_offset)
+        new_upper_v = min(255, mean_v + v_offset)
+
+        # Update the config
+        CFG.minimap.hsv_yellow_lower_h = new_lower_h
+        CFG.minimap.hsv_yellow_lower_s = new_lower_s
+        CFG.minimap.hsv_yellow_lower_v = new_lower_v
+        CFG.minimap.hsv_yellow_upper_h = new_upper_h
+        CFG.minimap.hsv_yellow_upper_s = new_upper_s
+        CFG.minimap.hsv_yellow_upper_v = new_upper_v
+
+        print(f'[SAMPLER] Dot center at pixel ({cx}, {cy})')
+        print(f'[SAMPLER] Sampled HSV = (H:{mean_h}, S:{mean_s}, V:{mean_v})')
+        print(f'[SAMPLER] Updated HSV range:')
+        print(f'  Lower: (H:{new_lower_h}, S:{new_lower_s}, V:{new_lower_v})')
+        print(f'  Upper: (H:{new_upper_h}, S:{new_upper_s}, V:{new_upper_v})')
+        print(f'[SAMPLER] Press F9 (save minimap profile) to persist these values for this map.')
+
+        # Show debug overlay
+        if CFG.debug:
+            dbg = img.copy()
+            cv2.circle(dbg, (cx, cy), max(3, 5), (0, 0, 255), 2)
+            cv2.circle(dbg, (cx, cy), 2, (255, 255, 255), -1)
+            overlay = np.zeros_like(dbg)
+            cv2.drawContours(overlay, [best_c], -1, (0, 255, 0), -1)
+            dbg = cv2.addWeighted(dbg, 1.0, overlay, 0.3, 0)
+            cv2.putText(dbg, f'H={mean_h} S={mean_s} V={mean_v}',
+                        (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.imshow('minimap_sampler', dbg)
+            cv2.waitKey(1)
+            time.sleep(2.0)
+            cv2.destroyWindow('minimap_sampler')
+
+    keyboard.add_hotkey('ctrl+f7', color_sampler)
+    # =================== End Color Sampler ===========================
 
     keyboard.add_hotkey('f8', roi_tuner)
 

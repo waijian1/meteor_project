@@ -2221,7 +2221,9 @@ class PetrisACW:
                 raise KeyboardInterrupt
 
             # Multi-platform recovery: e.g. A->B->C before continuing route.
-            if self._recover_to_route_platform():
+            # Skip recovery check during P3 visit phase (P3 is on same platform C as P1/P2)
+            skip_recovery = CFG.dynamic_rotation_enabled and (time.time() - self.rotation_start_time) >= CFG.dynamic_rotation_short_phase_duration
+            if not skip_recovery and self._recover_to_route_platform():
                 current = 'P2'
                 # current = self._closest_p_point() or current
                 continue

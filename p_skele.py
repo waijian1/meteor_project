@@ -2275,9 +2275,10 @@ class PetrisACW:
                     p1 = self.points.get('P1')
                     if p1:
                         self._move_horiz_to(p1[0], allow_tp=True)
+                        self._arrive_and_cast('P1')
                     self.rotation_start_time = time.time()
                     current = 'P1'
-                    print(f"[ROTATION] Back at P1. Timer reset. P1-P2 loop for {CFG.dynamic_rotation_short_phase_duration}s.")
+                    print(f"[ROTATION] Cast at P1 complete. Timer reset. P1-P2 loop for {CFG.dynamic_rotation_short_phase_duration}s.")
             else:
                 # Original behavior if dynamic rotation is not enabled
                 current = self._advance_from(current)

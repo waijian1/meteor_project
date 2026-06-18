@@ -1459,9 +1459,7 @@ class PetrisACW:
 
     def _recover_move_to_anchor_x(self, target_x: float) -> bool:
         """
-        Recovery-only anchor approach with tighter precision and micro-walk final alignment.
-        Uses recovery_anchor_window_x (smaller than generic anchor_window_x) for tighter
-        acceptance, plus a micro-walk phase at the end for exact positioning.
+        Recovery-only anchor approach with explicit stall detection.
         Returns False if x is not improving (e.g., wall-hug stuck).
         """
         start = time.time()
@@ -1479,8 +1477,8 @@ class PetrisACW:
                 x, _ = xy
                 dx = target_x - x
                 abs_dx = abs(dx)
-                if abs_dx <= CFG.recovery_anchor_window_x:
-                    break
+                if abs_dx <= CFG.anchor_window_x:
+                    return True
 
                 if abs_dx < best_dx - 0.001:
                     best_dx = abs_dx
@@ -1501,31 +1499,6 @@ class PetrisACW:
         finally:
             if direction_held:
                 self.ctrl.release(direction_held)
-
-        # Micro-walk final alignment: tiny holds to settle on exact position
-        direction_held = None
-        try:
-            for _ in range(12):
-                xy = self._get_xy()
-                if not xy:
-                    time.sleep(0.01); continue
-                x, _ = xy
-                dx = target_x - x
-                if abs(dx) <= CFG.recovery_anchor_window_x * 0.5:
-                    break
-                direction = 'right' if dx > 0 else 'left'
-                if direction_held != direction:
-                    if direction_held: self.ctrl.release(direction_held)
-                    self.ctrl.hold(direction); direction_held = direction
-                time.sleep(CFG.recovery_anchor_micro_walk_secs)
-                # Brief settle between ticks
-                self.ctrl.release(direction); direction_held = None
-                time.sleep(CFG.recovery_anchor_micro_walk_secs * 0.7)
-        finally:
-            if direction_held: self.ctrl.release(direction_held)
-
-        time.sleep(CFG.settle_after_anchor_secs)
-        return True
 
     def _detect_current_level_index(self) -> Optional[int]:
         xy = self._get_xy()

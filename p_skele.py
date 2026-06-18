@@ -114,10 +114,10 @@ class MinimapConfig:
     # --- Configurable HSV ranges for yellow player dot ---
     # These are calibrated per-map via the color sampler tool (Ctrl+F7)
     # Can also be edited in the minimap JSON profile file.
-    hsv_yellow_lower_h: int = 20
-    hsv_yellow_lower_s: int = 100
+    hsv_yellow_lower_h: int = 18
+    hsv_yellow_lower_s: int = 80
     hsv_yellow_lower_v: int = 140
-    hsv_yellow_upper_h: int = 40
+    hsv_yellow_upper_h: int = 42
     hsv_yellow_upper_s: int = 255
     hsv_yellow_upper_v: int = 255
 
@@ -132,8 +132,9 @@ class MinimapConfig:
     # --- Circularity filter ---
     # Higher = more strictly circular (1.0 = perfect circle).
     # The player dot is very circular; other characters are not.
-    # Set to 0 to disable circularity filter.
-    circularity_min: float = 0.70
+    # Set to 0 to disable circularity filter (default 0 = disabled,
+    # use Ctrl+F7 color sampler and Ctrl+F1 exclusion zones instead).
+    circularity_min: float = 0.0
     # --- Size filter (fraction of minimap area) ---
     min_area_fraction: float = 0.00015
     max_area_fraction: float = 0.0040

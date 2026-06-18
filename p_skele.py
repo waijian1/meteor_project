@@ -2271,10 +2271,10 @@ class PetrisACW:
                         print(f"[ROTATION] Walking to P3_POST_TP safe spot ({p3_post[0]:.3f}, {p3_post[1]:.3f}) then LEFT+TP.")
                         self._move_horiz_to(p3_post[0], allow_tp=False)
                         self.ctrl.teleport('left', taps=1)
-                    # Go to P1 and reset timer so the loop continues as P1->P2->P1->P2...
+                    # Go to P1 with TP (P3 is far right, P1 is far left on same platform)
                     p1 = self.points.get('P1')
                     if p1:
-                        self._move_horiz_to(p1[0], allow_tp=False)
+                        self._move_horiz_to(p1[0], allow_tp=True)
                     self.rotation_start_time = time.time()
                     current = 'P1'
                     print(f"[ROTATION] Back at P1. Timer reset. P1-P2 loop for {CFG.dynamic_rotation_short_phase_duration}s.")

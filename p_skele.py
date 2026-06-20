@@ -1550,6 +1550,12 @@ class PetrisACW:
         """
         Recover one level up using configured anchors for that transition.
         Example: A->B or B->C.
+        
+        Uses the same rope-save approach as p_petri.py's _rescue_grab_rope_and_climb:
+        1. Align precisely to the RECOVER anchor point (left or right)
+        2. Hold direction toward rope + UP to grab the rope (sticky grab)
+        3. Hold UP (no TP tapping) until target platform Y is reached
+        4. Extra hold at the end to clear the lip onto the platform
         """
         to_ref = self._platform_ref(to_level)
         if not to_ref:
@@ -1563,80 +1569,85 @@ class PetrisACW:
             return False
         x, _ = xy
 
-        # choose nearest configured anchor; if none, fallback to generic climb
+        # Choose nearest configured anchor; if none, fallback to generic climb
         if left and right:
             anchor = left if abs(left[0] - x) <= abs(right[0] - x) else right
             side = 'left' if anchor is left else 'right'
-            if not self._recover_move_to_anchor_x(anchor[0]):
-                print(f'[RECOVER] Anchor approach stalled for {from_level}->{to_level}.')
-                self._recovery_fail_safe_reset()
-                return False
         elif left or right:
             anchor = left or right
             side = 'left' if left else 'right'
-            if not self._recover_move_to_anchor_x(anchor[0]):
-                print(f'[RECOVER] Anchor approach stalled for {from_level}->{to_level}.')
+        else:
+            print(f'[RECOVER] Missing RECOVER_{from_level.upper()}_TO_{to_level.upper()}_L/R; fallback climb.')
+            ok = self._grab_rope_and_climb(target_y=target_y, max_secs=4.5)
+            if not ok:
                 self._recovery_fail_safe_reset()
                 return False
-        else:
-            side = None
-            print(f'[RECOVER] Missing RECOVER_{from_level.upper()}_TO_{to_level.upper()}_L/R; fallback climb.')
+            return True
 
-        # Always use rope climbing method (no UP+TP teleport) to recover platforms.
-        # This ensures stable recovery using RECOVER_* anchor points.
-        # Bypass _grab_rope_and_climb (its retry loop uses ROPE_PRE_L on wrong platform).
-        # Do a direct rope grab + climb from the recovery anchor position.
-        if side:
-            toward = 'right' if side == 'left' else 'left'
-            ok = False
-            for _ in range(3):
-                # Attempt rope grab from current anchor position
-                if self._attempt_rope_grab_sticky(toward):
-                    # Climb confirmed — hold UP and tap TP until target_y reached
-                    y_last = (self._get_xy() or (0, 0))[1]
-                    last_improve = time.time()
-                    deadline = time.time() + 5.0
-                    last_tp_tap = time.time()
-                    while time.time() < deadline:
-                        if keyboard.is_pressed('esc'): raise KeyboardInterrupt
-                        xy = self._get_xy()
-                        if not xy: time.sleep(0.02); continue
-                        y = xy[1]
-                        if y <= target_y + CFG.tol_y:
-                            # Extra 0.5s hold UP to fully clear the lip onto the platform
-                            _arrow_hold('up', 0.5)
-                            ok = True
-                            break
-                        now = time.time()
-                        if (now - last_tp_tap) >= rand(CFG.tp_min_interval, CFG.tp_max_interval):
-                            self.ctrl.tp_pulse()
-                            last_tp_tap = now
-                        if (y_last - y) > 0.001:
-                            y_last = y
-                            last_improve = time.time()
-                        if time.time() - last_improve > 0.7:
-                            break
-                        time.sleep(0.02)
-                    _arrow_up('up')
-                    if ok:
-                        break
-                # Grab failed — stay on anchor, release, retry
-                _arrow_up('up')
-                time.sleep(0.08)
-                # Re-align to anchor without moving to wrong platform
-                if side and left and right:
-                    anchor = left if side == 'left' else right
-                    self._recover_move_to_anchor_x(anchor[0])
-                elif side and (left or right):
-                    anchor = left or right
-                    self._recover_move_to_anchor_x(anchor[0])
-        else:
-            ok = self._grab_rope_and_climb(target_y=target_y, max_secs=4.5)
+        toward = 'right' if side == 'left' else 'left'
 
-        if not ok:
+        # Step 1: Precisely align to the anchor point (like p_petri's _go_to_anchor_precise)
+        self._go_to_anchor_precise(anchor[0])
+
+        # Step 2: Try up to 6 sticky rope grab attempts (like p_petri's _rescue_grab_rope_and_climb)
+        for _ in range(6):
+            if self._attempt_rope_grab_sticky(toward):
+                break
+            # Tiny nudge toward rope, stay near anchor
+            self.ctrl.hold(toward); time.sleep(0.04); self.ctrl.release(toward)
+            time.sleep(0.10)
+        else:
+            # All grab attempts failed
+            print(f'[RECOVER] Rope grab failed after 6 attempts for {from_level}->{to_level}.')
             self._recovery_fail_safe_reset()
             return False
-        self._dismount_to_platform(target_y)
+
+        # Step 3: Hold UP until target_y reached (like p_petri - no TP tapping during climb)
+        y_last = (self._get_xy() or (0, 0))[1]
+        last_improve = time.time()
+        stuck_timer = time.time()
+        deadline = time.time() + 5.0
+        reached = False
+        while time.time() < deadline:
+            if keyboard.is_pressed('esc'): raise KeyboardInterrupt
+            xy = self._get_xy()
+            if not xy: time.sleep(0.02); continue
+            y = xy[1]
+            if y <= target_y + CFG.tol_y:
+                reached = True
+                break
+            if (y_last - y) > 0.001:
+                y_last = y
+                last_improve = time.time()
+                stuck_timer = time.time()
+            else:
+                # Plateau watchdog: if stuck in same band for >= stuck_secs, hold UP harder
+                if time.time() - stuck_timer >= CFG.stuck_secs:
+                    _arrow_down('up')
+                    time.sleep(CFG.unstick_hold_up_secs)
+                    _arrow_up('up')
+                    stuck_timer = time.time()
+            if time.time() - last_improve > 0.7:
+                break
+            time.sleep(0.02)
+
+        # Step 4: Extra hold to clear the lip onto the platform (like p_petri)
+        if reached:
+            end_time = time.time() + CFG.climb_extra_hold_secs
+            while time.time() < end_time:
+                xy = self._get_xy()
+                if xy and xy[1] < y_last - 0.002:
+                    end_time = max(end_time, time.time() + 0.2)
+                    y_last = xy[1]
+                time.sleep(0.02)
+
+        _arrow_up('up')
+
+        if not reached:
+            print(f'[RECOVER] Climb to y={target_y:.3f} failed for {from_level}->{to_level}.')
+            self._recovery_fail_safe_reset()
+            return False
+
         return True
 
     def _tp_up_recover_to_y(self, target_y: float) -> bool:

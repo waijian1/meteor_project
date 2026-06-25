@@ -2,5 +2,27 @@
   "x": 4,
   "y": 26,
   "w": 111,
-  "h": 88
+  "h": 88,
+  "hsv_yellow_lower_h": 18,
+  "hsv_yellow_lower_s": 80,
+  "hsv_yellow_lower_v": 140,
+  "hsv_yellow_upper_h": 42,
+  "hsv_yellow_upper_s": 255,
+  "hsv_yellow_upper_v": 255,
+  "hsv_white_lower_h": 0,
+  "hsv_white_lower_s": 0,
+  "hsv_white_lower_v": 210,
+  "hsv_white_upper_h": 180,
+  "hsv_white_upper_s": 60,
+  "hsv_white_upper_v": 255,
+  "circularity_min": 0.0,
+  "min_area_fraction": 0.00015,
+  "max_area_fraction": 0.004,
+  "edge_margin": 2,
+  "exclusion_zones": [
+    [
+      0.45045045045045046,
+      0.45454545454545453
+    ]
+  ]
 }

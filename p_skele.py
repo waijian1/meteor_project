@@ -768,7 +768,7 @@ class Buffs:
             self.next_potion = self._next_due_with_jitter(self.t.POTION)
 
     def tick(self, at_point: str):
-        if at_point not in ('P1'):
+        if at_point not in ('P1', 'P2'):
             return
         did = False
         now = time.time()

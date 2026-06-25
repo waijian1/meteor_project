@@ -2208,8 +2208,21 @@ class PetrisACW:
         # Check if this point requires double-cast on the current map
         should_double_cast = point_name in self.points.double_cast_points
 
-        # Buffs only at P1 & P4
-        did_buff = self.buffs.tick(point_name)
+        # Buffs only at P1 — verify player is on the correct platform first
+        did_buff = False
+        if point_name == 'P1':
+            tgt = self.points.get('P1')
+            if tgt:
+                xy = self._get_xy()
+                if xy:
+                    _, cy = xy
+                    _, ty = tgt
+                    if abs(cy - ty) <= CFG.tol_y:
+                        did_buff = self.buffs.tick(point_name)
+                    else:
+                        print(f'[BUFF] P1: Player not on correct platform (y={cy:.3f}, expected y={ty:.3f}), skipping buffs')
+                else:
+                    print('[BUFF] P1: Cannot detect player position, skipping buffs')
         if did_buff:
             # Give the client time to finish the buff animation before Meteor
             time.sleep(random.uniform(CFG.buff_settle_min, CFG.buff_settle_max))

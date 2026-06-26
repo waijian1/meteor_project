@@ -1372,7 +1372,7 @@ class PetrisACW:
                 # The climb() method now holds both 'up' + Teleport.
                 pdi.keyDown(CFG.keys.TP)
                 try:
-                    climbed = self._grab_rope_and_climb(target_y=ty, max_secs=3.5)
+                    climbed = self._grab_rope_and_climb(target_y=ty, max_secs=4.0)
                     if not climbed:
                         self._climb_to_y(ty)
                 finally:

@@ -1368,15 +1368,9 @@ class PetrisACW:
 
         if abs(dy) > CFG.tol_y:
             if dy < 0:
-                # Hold Teleport throughout the entire climb sequence.
-                # The climb() method now holds both 'up' + Teleport.
-                pdi.keyDown(CFG.keys.TP)
-                try:
-                    climbed = self._grab_rope_and_climb(target_y=ty, max_secs=4.0)
-                    if not climbed:
-                        self._climb_to_y(ty)
-                finally:
-                    pdi.keyUp(CFG.keys.TP)
+                climbed = self._grab_rope_and_climb(target_y=ty, max_secs=4.25, use_tp_on_climb=False)
+                if not climbed:
+                    self._climb_to_y(ty)
             else:
                 self._drop_down_to_y(ty)
 
@@ -1980,6 +1974,7 @@ class PetrisACW:
         max_secs: float = 4.5,
         force_side: Optional[str] = None,
         use_preclimb_anchor: bool = True,
+        use_tp_on_climb: bool = True,
     ):
         """
         From your pre-climb anchor, grab rope with (dir + JUMP + UP), confirm y decreases,
@@ -2048,8 +2043,11 @@ class PetrisACW:
             print('FAILL TIME NOWW !!')
             return False
 
-        # Climbing confirmed — continue holding UP and tap TP for the full climb.
-        print("Climbing (holding up + tapping teleport)...")
+        # Climbing confirmed — continue holding UP and (optionally) tap TP for the full climb.
+        if use_tp_on_climb:
+            print("Climbing (holding up + tapping teleport)...")
+        else:
+            print("Climbing (holding up only, no teleport)...")
         y_last = self._get_xy()[1] if self._get_xy() else y0
         last_improve = time.time()
         stuck_timer = time.time()
@@ -2070,10 +2068,11 @@ class PetrisACW:
                     break
 
                 # Tap teleport repeatedly while climbing (provides knockback resistance)
-                now = time.time()
-                if (now - last_tp_tap) >= rand(CFG.tp_min_interval, CFG.tp_max_interval):
-                    self.ctrl.tp_pulse()
-                    last_tp_tap = now
+                if use_tp_on_climb:
+                    now = time.time()
+                    if (now - last_tp_tap) >= rand(CFG.tp_min_interval, CFG.tp_max_interval):
+                        self.ctrl.tp_pulse()
+                        last_tp_tap = now
                 # still improving?
                 if (y_last - y) > 0.001:
                     y_last = y
@@ -2102,11 +2101,12 @@ class PetrisACW:
                     if xy and xy[1] < y_last - 0.002:
                         end_time = max(end_time, time.time() + 0.2)
                         y_last = xy[1]
-                    # Keep tapping TP during extra hold too
-                    now = time.time()
-                    if (now - last_tp_tap) >= rand(CFG.tp_min_interval, CFG.tp_max_interval):
-                        self.ctrl.tp_pulse()
-                        last_tp_tap = now
+                # Keep tapping TP during extra hold too (only if use_tp_on_climb)
+                    if use_tp_on_climb:
+                        now = time.time()
+                        if (now - last_tp_tap) >= rand(CFG.tp_min_interval, CFG.tp_max_interval):
+                            self.ctrl.tp_pulse()
+                            last_tp_tap = now
                     time.sleep(0.02)
         finally:
             _arrow_up('up')  # release UP

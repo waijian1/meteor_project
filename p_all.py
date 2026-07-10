@@ -48,7 +48,7 @@ class Keys:
 class Timers:
     MW: float = 100.0
     MG: float = 150.0
-    SB: float = 30.0
+    SB: float = 60.0
     INFINITY: float = 620.0
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 

@@ -35,6 +35,7 @@ class Keys:
     MW: str = 't'
     MG: str = 'd'
     SB: str = 'j'
+    INFINITY: str = 'u'
     LEFT: str = 'left'
     RIGHT: str = 'right'
     UP: str = 'up'
@@ -48,6 +49,7 @@ class Timers:
     MW: float = 100.0
     MG: float = 150.0
     SB: float = 30.0
+    INFINITY: float = 620.0
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 
 
@@ -463,6 +465,7 @@ class Buffs:
         self.next_mw = now  # cast ASAP at start
         self.next_mg = now
         self.next_sb = now
+        self.next_infinity = now
 
     def mark_buff_casted(self, key_name: str):
         """Advance buff cooldown timer when the buff was cast outside Buffs.tick()."""
@@ -474,6 +477,8 @@ class Buffs:
             self.next_mw = now + self.t.MW - self.t.RECAST_MARGIN
         elif k == 'SB':
             self.next_sb = now + self.t.SB - self.t.RECAST_MARGIN
+        elif k == 'INFINITY':
+            self.next_infinity = now + self.t.INFINITY - self.t.RECAST_MARGIN
 
     def tick(self, at_point: str):
         if at_point not in ('P1', 'P4'):
@@ -527,6 +532,14 @@ class Buffs:
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
             pdi.keyUp(self.k.MW)
             self.next_mw = now + self.t.MW - self.t.RECAST_MARGIN
+            did = True
+            time.sleep(CFG.buff_chain_gap)
+
+        if now >= self.next_infinity:
+            pdi.keyDown(self.k.INFINITY)
+            time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
+            pdi.keyUp(self.k.INFINITY)
+            self.next_infinity = now + self.t.INFINITY - self.t.RECAST_MARGIN
             did = True
             time.sleep(CFG.buff_chain_gap)
 

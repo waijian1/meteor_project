@@ -68,6 +68,7 @@ class Keys:
     MW: str = 't'
     MG: str = 'd'
     SB: str = 'j'
+    INFINITY: str = 'u'
     LEFT: str = 'left'
     RIGHT: str = 'right'
     UP: str = 'up'
@@ -81,6 +82,7 @@ class Timers:
     MW: float = 200.0
     MG: float = 180.0
     SB: float = 60.0
+    INFINITY: float = 620.0
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 
 
@@ -726,6 +728,7 @@ class Buffs:
         self.next_mw = now  # cast ASAP at start
         self.next_mg = now
         self.next_sb = now
+        self.next_infinity = now
 
     def _next_due_with_jitter(self, base_interval: float) -> float:
         jitter = rand(-CFG.buff_interval_jitter_secs, CFG.buff_interval_jitter_secs)
@@ -741,6 +744,8 @@ class Buffs:
             self.next_mw = self._next_due_with_jitter(self.t.MW)
         elif k == 'SB':
             self.next_sb = self._next_due_with_jitter(self.t.SB)
+        elif k == 'INFINITY':
+            self.next_infinity = self._next_due_with_jitter(self.t.INFINITY)
 
     def tick(self, at_point: str):
         if at_point not in ('P1'):
@@ -772,6 +777,15 @@ class Buffs:
             time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
             pdi.keyUp(self.k.MW)
             self.next_mw = self._next_due_with_jitter(self.t.MW)
+            did = True
+            time.sleep(CFG.buff_chain_gap)
+
+        if now >= self.next_infinity:
+            time.sleep(CFG.buff_precast_pause_secs)
+            pdi.keyDown(self.k.INFINITY)
+            time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
+            pdi.keyUp(self.k.INFINITY)
+            self.next_infinity = self._next_due_with_jitter(self.t.INFINITY)
             did = True
             time.sleep(CFG.buff_chain_gap)
 

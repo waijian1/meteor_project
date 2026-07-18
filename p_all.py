@@ -362,50 +362,45 @@ class MinimapTracker:
                     break
             cands.append((cx, cy, r, c, is_excluded))
 
-        # Filter: STRICTLY prefer non-excluded candidates. 
-        # NEVER fall back to excluded candidates - exclusion zones are strictly ignored.
+        # Filter: prefer non-excluded candidates, fall back to excluded if none else
         non_excluded = [t for t in cands if not t[4]]
+        excluded = [t for t in cands if t[4]]
 
         if non_excluded:
             working = non_excluded
-        elif contours:
-            # No non-excluded candidates at all (only excluded noise blobs visible).
-            # Return None - we'd rather lose tracking than track a false positive.
-            if CFG.debug:
-                dbg = img.copy()
-                cv2.putText(dbg, 'EXCLUDED', (5, 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-                for cand in cands:
-                    if cand[4]:
-                        # Draw excluded candidates in blue
-                        cv2.circle(dbg, (int(cand[0]), int(cand[1])), max(2, int(cand[2])), (255, 0, 0), 1)
-                cv2.imshow('minimap_debug', dbg)
-                cv2.imshow('minimap_mask', mask)
-                cv2.waitKey(1)
-            return None
+        elif excluded:
+            # Only excluded blobs visible - reset last_xy so next detection isn't biased
+            self.last_xy = None
+            working = excluded
         else:
-            if CFG.debug:
-                cv2.imshow('minimap_debug', img)
-                cv2.imshow('minimap_mask', mask); cv2.waitKey(1)
-            return None
+            # No candidates at all; fallback to smallest contour
+            if contours:
+                c = min(contours, key=cv2.contourArea)
+                (cx, cy), r = cv2.minEnclosingCircle(c)
+            else:
+                if CFG.debug:
+                    cv2.imshow('minimap_debug', img)
+                    cv2.imshow('minimap_mask', mask); cv2.waitKey(1)
+                return None
 
-        # Score candidates: prefer near last_xy (or center if first), and away from edges
-        if self.last_xy is not None:
-            lx, ly = self.last_xy[0] * w, self.last_xy[1] * h
-            def score(t):
-                ucx, ucy = t[0], t[1]
-                d2 = (ucx - lx) ** 2 + (ucy - ly) ** 2
-                border_pen = (min(ucx, w-ucx, ucy, h-ucy) < 10) * 1e6
-                return d2 + border_pen
-        else:
-            def score(t):
-                ucx, ucy = t[0], t[1]
-                d2 = (ucx - w/2) ** 2 + (ucy - h/2) ** 2
-                border_pen = (min(ucx, w-ucx, ucy, h-ucy) < 10) * 1e6
-                return d2 + border_pen
+        if non_excluded or excluded:
+            # Score candidates: prefer near last_xy (or center if first), and away from edges
+            if self.last_xy is not None:
+                lx, ly = self.last_xy[0] * w, self.last_xy[1] * h
+                def score(t):
+                    ucx, ucy = t[0], t[1]
+                    d2 = (ucx - lx) ** 2 + (ucy - ly) ** 2
+                    border_pen = (min(ucx, w-ucx, ucy, h-ucy) < 10) * 1e6
+                    return d2 + border_pen
+            else:
+                def score(t):
+                    ucx, ucy = t[0], t[1]
+                    d2 = (ucx - w/2) ** 2 + (ucy - h/2) ** 2
+                    border_pen = (min(ucx, w-ucx, ucy, h-ucy) < 10) * 1e6
+                    return d2 + border_pen
 
-        working.sort(key=score)
-        cx, cy, r, _, _ = working[0]
+            working.sort(key=score)
+            cx, cy, r, _, _ = working[0]
 
         x_norm, y_norm = cx / w, cy / h
         self.last_xy = (x_norm, y_norm)
@@ -1765,10 +1760,8 @@ def main():
         if xy is None:
             print('[EXCL] Could not detect any blob to exclude.')
             return
-        # Reset last_xy so the scoring doesn't prefer the noise position
-        bot.mm.last_xy = None
         bot.mm.add_exclusion_zone(xy)
-        # Re-trigger display to show updated detection (now should find real player dot)
+        # Re-trigger display to show updated detection
         bot.mm.get_player_xy()
     keyboard.add_hotkey('ctrl+f1', add_noise_exclusion)  # mark current wrong-detection as noise
     keyboard.add_hotkey('ctrl+f2', lambda: (bot.mm.clear_exclusion_zones() or save_minimap_profile(bot.mm), bot.mm.get_player_xy()))

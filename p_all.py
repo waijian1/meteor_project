@@ -295,7 +295,7 @@ class MinimapTracker:
         self.last_xy: Optional[Tuple[float, float]] = None  # normalized [0..1]
         self.yellow_only = True  # F11 will toggle this
         self.exclusion_zones: List[Tuple[float, float]] = []  # normalized [0..1] positions to ignore
-        self.exclusion_radius: float = 0.015  # normalized radius around each exclusion point
+        self.exclusion_radius: float = 0.025  # normalized radius around each exclusion point
         self.noise_positions: List[Tuple[int, int]] = []  # pixel positions of persistent noise (for debug)
 
     def add_exclusion_zone(self, xy: Tuple[float, float], auto_save: bool = True):
@@ -1753,12 +1753,15 @@ def main():
     keyboard.add_hotkey('f11', lambda: setattr(bot.mm, 'yellow_only', not bot.mm.yellow_only))
     # ===== Exclusion Zone Hotkeys =====
     def add_noise_exclusion():
+        # Get the currently detected position (which is the false positive / noise)
         xy = bot.mm.get_player_xy()
         if xy is None:
             print('[EXCL] Could not detect any blob to exclude.')
             return
+        # Reset last_xy so the scoring doesn't prefer the noise position
+        bot.mm.last_xy = None
         bot.mm.add_exclusion_zone(xy)
-        # Re-trigger display to show updated detection
+        # Re-trigger display to show updated detection (now should find real player dot)
         bot.mm.get_player_xy()
     keyboard.add_hotkey('ctrl+f1', add_noise_exclusion)  # mark current wrong-detection as noise
     keyboard.add_hotkey('ctrl+f2', lambda: (bot.mm.clear_exclusion_zones() or save_minimap_profile(bot.mm), bot.mm.get_player_xy()))

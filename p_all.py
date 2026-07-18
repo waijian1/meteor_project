@@ -539,7 +539,7 @@ class Buffs:
             self.next_infinity = now + self.t.INFINITY - self.t.RECAST_MARGIN
 
     def tick(self, at_point: str):
-        if at_point not in ('P1', 'P4'):
+        if at_point not in ('P1'):
             return
         did = False
         # now = time.time()

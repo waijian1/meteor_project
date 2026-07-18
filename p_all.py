@@ -406,7 +406,8 @@ class MinimapTracker:
         if CFG.debug:
             dbg = img.copy()
             # draw candidates (green) and chosen one (red)
-            for (ux, uy, ur, cc) in cands:
+            for cand in cands:
+                ux, uy, ur = cand[0], cand[1], cand[2]
                 cv2.circle(dbg, (int(ux), int(uy)), max(2, int(ur)), (0, 255, 0), 1)
             cv2.circle(dbg, (int(cx), int(cy)), max(3, int(r)), (0, 0, 255), 2)
             cv2.imshow('minimap_debug', dbg)

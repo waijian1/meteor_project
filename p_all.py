@@ -150,16 +150,24 @@ def configure_map_points_file(map_name: str):
     CFG.minimap_file = os.path.join('minimap', f'{map_name}_minimap.json')
 
 
-def save_minimap_profile():
+def save_minimap_profile(mm_tracker: 'MinimapTracker' = None):
+    """Save minimap config. Optionally pass a MinimapTracker to persist exclusion zones."""
     folder = os.path.dirname(CFG.minimap_file)
     if folder:
         os.makedirs(folder, exist_ok=True)
+    data = asdict(CFG.minimap)
+    # Persist exclusion zones if we have a tracker
+    if mm_tracker is not None and hasattr(mm_tracker, 'exclusion_zones'):
+        data['exclusion_zones'] = [list(z) for z in mm_tracker.exclusion_zones]
     with open(CFG.minimap_file, 'w') as f:
-        json.dump(asdict(CFG.minimap), f, indent=2)
+        json.dump(data, f, indent=2)
     print(f'[TUNE] Saved minimap profile -> {CFG.minimap_file}')
+    if mm_tracker and mm_tracker.exclusion_zones:
+        print(f'[TUNE]   Saved {len(mm_tracker.exclusion_zones)} exclusion zone(s)')
 
 
-def load_minimap_profile():
+def load_minimap_profile(mm_tracker: 'MinimapTracker' = None):
+    """Load minimap config. Optionally pass a MinimapTracker to restore exclusion zones."""
     if not os.path.exists(CFG.minimap_file):
         print(f'[TUNE] No minimap profile found, using defaults: {CFG.minimap_file}')
         return
@@ -169,6 +177,15 @@ def load_minimap_profile():
         for key in ('x', 'y', 'w', 'h'):
             if key in data:
                 setattr(CFG.minimap, key, int(data[key]))
+        # Load exclusion zones
+        if mm_tracker is not None and 'exclusion_zones' in data:
+            loaded = 0
+            for z in data['exclusion_zones']:
+                if isinstance(z, (list, tuple)) and len(z) == 2:
+                    mm_tracker.exclusion_zones.append(tuple(z))
+                    loaded += 1
+            if loaded:
+                print(f'[TUNE]   Loaded {loaded} exclusion zone(s)')
         print(
             '[TUNE] Loaded minimap profile from '
             f'{CFG.minimap_file}: x={CFG.minimap.x} y={CFG.minimap.y} w={CFG.minimap.w} h={CFG.minimap.h}'
@@ -277,6 +294,20 @@ class MinimapTracker:
         self.gw = gw
         self.last_xy: Optional[Tuple[float, float]] = None  # normalized [0..1]
         self.yellow_only = True  # F11 will toggle this
+        self.exclusion_zones: List[Tuple[float, float]] = []  # normalized [0..1] positions to ignore
+        self.exclusion_radius: float = 0.015  # normalized radius around each exclusion point
+        self.noise_positions: List[Tuple[int, int]] = []  # pixel positions of persistent noise (for debug)
+
+    def add_exclusion_zone(self, xy: Tuple[float, float], auto_save: bool = True):
+        """Add a position to ignore (e.g., map decoration that looks like the player dot)."""
+        self.exclusion_zones.append(xy)
+        print(f'[EXCL] Added exclusion zone at {xy}. Total: {len(self.exclusion_zones)}')
+        if auto_save:
+            save_minimap_profile(self)
+
+    def clear_exclusion_zones(self):
+        self.exclusion_zones.clear()
+        print('[EXCL] All exclusion zones cleared.')
 
     def get_player_xy(self) -> Optional[Tuple[float, float]]:
         img = self.gw.capture(self.gw.minimap_roi())
@@ -320,30 +351,54 @@ class MinimapTracker:
                (x + ww) >= (w - edge_margin) or (y + hh) >= (h - edge_margin):
                 continue
             (cx, cy), r = cv2.minEnclosingCircle(c)
-            cands.append((cx, cy, r, c))
+            # Check if this contour is near an exclusion zone
+            cx_norm, cy_norm = cx / w, cy / h
+            is_excluded = False
+            for ez in self.exclusion_zones:
+                edx = cx_norm - ez[0]
+                edy = cy_norm - ez[1]
+                if (edx*edx + edy*edy) ** 0.5 < self.exclusion_radius:
+                    is_excluded = True
+                    break
+            cands.append((cx, cy, r, c, is_excluded))
 
-        # Fallback to smallest contour if nothing passed the filters
-        if not cands:
-            c = min(contours, key=cv2.contourArea)
-            (cx, cy), r = cv2.minEnclosingCircle(c)
+        # Filter: prefer non-excluded candidates, fall back to excluded if none else
+        non_excluded = [t for t in cands if not t[4]]
+        excluded = [t for t in cands if t[4]]
+
+        if non_excluded:
+            working = non_excluded
+        elif excluded:
+            working = excluded
         else:
+            # No candidates at all; fallback to smallest contour
+            if contours:
+                c = min(contours, key=cv2.contourArea)
+                (cx, cy), r = cv2.minEnclosingCircle(c)
+            else:
+                if CFG.debug:
+                    cv2.imshow('minimap_debug', img)
+                    cv2.imshow('minimap_mask', mask); cv2.waitKey(1)
+                return None
+
+        if non_excluded or excluded:
             # Score candidates: prefer near last_xy (or center if first), and away from edges
             if self.last_xy is not None:
                 lx, ly = self.last_xy[0] * w, self.last_xy[1] * h
                 def score(t):
-                    cx, cy = t[0], t[1]
-                    d2 = (cx - lx) ** 2 + (cy - ly) ** 2
-                    border_pen = (min(cx, w-cx, cy, h-cy) < 10) * 1e6
+                    ucx, ucy = t[0], t[1]
+                    d2 = (ucx - lx) ** 2 + (ucy - ly) ** 2
+                    border_pen = (min(ucx, w-ucx, ucy, h-ucy) < 10) * 1e6
                     return d2 + border_pen
             else:
                 def score(t):
-                    cx, cy = t[0], t[1]
-                    d2 = (cx - w/2) ** 2 + (cy - h/2) ** 2
-                    border_pen = (min(cx, w-cx, cy, h-cy) < 10) * 1e6
+                    ucx, ucy = t[0], t[1]
+                    d2 = (ucx - w/2) ** 2 + (ucy - h/2) ** 2
+                    border_pen = (min(ucx, w-ucx, ucy, h-ucy) < 10) * 1e6
                     return d2 + border_pen
 
-            cands.sort(key=score)
-            cx, cy, r, _ = cands[0]
+            working.sort(key=score)
+            cx, cy, r, _, _ = working[0]
 
         x_norm, y_norm = cx / w, cy / h
         self.last_xy = (x_norm, y_norm)
@@ -1625,9 +1680,8 @@ def main():
     args = parser.parse_args()
     map_name = sanitize_map_name(args.map_name)
     configure_map_points_file(map_name)
-    load_minimap_profile()
-
     bot = PetrisACW()
+    load_minimap_profile(bot.mm)
     start_stuck_watchdog(bot.mm)
     # start auto-focus watchdog
     autof = AutoFocus(bot.gw, enabled=CFG.auto_focus_enabled, period=CFG.auto_focus_period)
@@ -1654,6 +1708,8 @@ def main():
     print('  F12     -> Set ROPE_PRE_R (before-rope jump, right side)')
     print('  Ctrl+F10 -> Set RESCUE_PRE_L (bottom-floor rope approach, left)')
     print('  Ctrl+F12 -> Set RESCUE_PRE_R (bottom-floor rope approach, right)')
+    print('  Ctrl+F1 -> Add exclusion zone (mark current false detection as noise)')
+    print('  Ctrl+F2 -> Clear all exclusion zones')
     print('  F5      -> Start/Stop routine')
     print('  ESC     -> Emergency stop')
     print('  Ctrl+Alt+F -> Toggle auto-focus game window')
@@ -1694,6 +1750,18 @@ def main():
     keyboard.add_hotkey('f10', lambda: set_rope_pre('L'))  # record left pre-climb
     keyboard.add_hotkey('f12', lambda: set_rope_pre('R'))  # record right pre-climb
     keyboard.add_hotkey('f11', lambda: setattr(bot.mm, 'yellow_only', not bot.mm.yellow_only))
+    # ===== Exclusion Zone Hotkeys =====
+    def add_noise_exclusion():
+        xy = bot.mm.get_player_xy()
+        if xy is None:
+            print('[EXCL] Could not detect any blob to exclude.')
+            return
+        bot.mm.add_exclusion_zone(xy)
+        # Re-trigger display to show updated detection
+        bot.mm.get_player_xy()
+    keyboard.add_hotkey('ctrl+f1', add_noise_exclusion)  # mark current wrong-detection as noise
+    keyboard.add_hotkey('ctrl+f2', lambda: (bot.mm.clear_exclusion_zones() or save_minimap_profile(bot.mm), bot.mm.get_player_xy()))
+    # ===== End Exclusion Zone =====
     keyboard.add_hotkey('ctrl+f10', lambda: set_rescue_pre('L'))  # rescue anchor on left rope (bottom)
     keyboard.add_hotkey('ctrl+f12', lambda: set_rescue_pre('R'))  # rescue anchor on right rope (bottom)
     keyboard.add_hotkey('ctrl+alt+f', lambda: autof.toggle())

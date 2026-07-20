@@ -140,6 +140,13 @@ class MinimapConfig:
     max_area_fraction: float = 0.0040
     # --- Edge margin (pixels) to reject contours touching minimap border ---
     edge_margin: int = 2
+    # --- Maximum allowed score for a candidate to be accepted as the player dot ---
+    # Lower = stricter. The real player dot typically scores around -0.15 to 0.0
+    # (close to reference position, good circular shape, expected size).
+    # False positives (map decorations, minimap elements) typically score > 0.20
+    # because they're far from the expected position or have wrong shape/size.
+    # Set to a large value (e.g. 999) to disable.
+    score_threshold: float = 0.15
 
 
 @dataclass
@@ -535,13 +542,20 @@ class MinimapTracker:
                 best_score = score_val
                 best_cx, best_cy, best_r, best_c = cx, cy, r, c
 
-        if best_c is not None:
+        # Apply score threshold: only accept the candidate if its score is low enough.
+        # The real player dot (close to reference, circular, expected size) scores
+        # around -0.15 to 0.05. False positives (wrong location/shape/size) start
+        # at 0.15+. The threshold also breaks the ping-pong effect where two false
+        # positives alternately update last_xy and pull detection between them.
+        if best_c is not None and best_score <= m.score_threshold:
             cx, cy, r = best_cx, best_cy, best_r
         else:
             if CFG.debug:
                 cv2.imshow('minimap_debug', img)
                 cv2.imshow('minimap_mask', mask); cv2.waitKey(1)
-            self.last_xy = None
+            # Do NOT update last_xy when rejecting — this prevents the ping-pong
+            # effect where a rejected false positive still corrupts the reference
+            # for the next frame.
             return None
 
         x_norm, y_norm = cx / w, cy / h

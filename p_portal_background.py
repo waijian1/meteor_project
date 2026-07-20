@@ -466,6 +466,21 @@ class MinimapTracker:
             mask = cv2.bitwise_or(yellow, white)
 
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+        # --- Black out exclusion zones directly on the mask ---
+        # This is far more reliable than checking contour centers against exclusion
+        # zones after detection. By removing the false-positive pixels from the mask
+        # first, the false-positive contour will never be found by findContours at all.
+        # This eliminates flickering where a contour's center shifts just outside the
+        # exclusion radius due to pixel noise.
+        if self.exclusion_zones:
+            h_mask, w_mask = mask.shape
+            for ez in self.exclusion_zones:
+                ex = int(ez[0] * w_mask)
+                ey = int(ez[1] * h_mask)
+                er = int(self.exclusion_radius * max(w_mask, h_mask))
+                cv2.circle(mask, (ex, ey), er, 0, -1)
+
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if not contours:
@@ -480,7 +495,6 @@ class MinimapTracker:
         maxA = int(m.max_area_fraction * total_area)
 
         edge_margin = m.edge_margin
-        circularity_min = m.circularity_min
 
         # Reference position for scoring
         if self.last_xy is not None:
@@ -490,16 +504,11 @@ class MinimapTracker:
             ref_x = w / 2
             ref_y = h / 2
 
-        # Score ALL contours that pass basic filters; pick closest to reference
-        # Two-pass: first try non-excluded candidates, then fall back to all
         best_score = float('inf')
         best_cx = None
         best_cy = None
         best_r = None
         best_c = None
-
-        # Collect all valid candidates with their scores and exclusion status
-        candidates = []
 
         for c in contours:
             a = cv2.contourArea(c)
@@ -510,16 +519,6 @@ class MinimapTracker:
                (x + ww) >= (w - edge_margin) or (y + hh) >= (h - edge_margin):
                 continue
             (cx, cy), r = cv2.minEnclosingCircle(c)
-
-            # Check if near exclusion zone
-            cx_norm, cy_norm = cx / w, cy / h
-            is_excluded = False
-            for ez in self.exclusion_zones:
-                edx = cx_norm - ez[0]
-                edy = cy_norm - ez[1]
-                if (edx*edx + edy*edy) ** 0.5 < self.exclusion_radius:
-                    is_excluded = True
-                    break
 
             dx_px = cx - ref_x
             dy_px = cy - ref_y
@@ -532,22 +531,10 @@ class MinimapTracker:
             size_bonus = 1.0 - min(1.0, abs(a - expected_area) / expected_area) * 0.3
             score_val = dist_score - (size_bonus * 0.15) + (shape_penalty * 0.05)
 
-            candidates.append((score_val, is_excluded, cx, cy, r, c))
-
-        # Two-pass: ALWAYS prefer non-excluded candidates first.
-        # NEVER fall back to excluded candidates — exclusion zones are meant to be
-        # permanently ignored (e.g., map decorations that look like the player dot).
-        # If the only detections are in exclusion zones, return None so the caller
-        # knows the player position is not reliably detectable.
-        for score_val, is_excluded, cx, cy, r, c in candidates:
-            if is_excluded:
-                continue  # skip excluded candidates entirely
-            # Non-excluded: always preferred
             if score_val < best_score:
                 best_score = score_val
                 best_cx, best_cy, best_r, best_c = cx, cy, r, c
 
-        # If we found ANY candidate, use it (don't filter out good-enough)
         if best_c is not None:
             cx, cy, r = best_cx, best_cy, best_r
         else:

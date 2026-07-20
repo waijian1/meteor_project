@@ -535,28 +535,17 @@ class MinimapTracker:
             candidates.append((score_val, is_excluded, cx, cy, r, c))
 
         # Two-pass: ALWAYS prefer non-excluded candidates first.
-        # Only fall back to excluded candidates if no non-excluded dot exists.
-        # This ensures exclusion zones are skipped when the real player dot is visible.
-        best_excluded_score = float('inf')
-        best_excluded_cx = best_excluded_cy = best_excluded_r = None
-        best_excluded_c = None
-
+        # NEVER fall back to excluded candidates — exclusion zones are meant to be
+        # permanently ignored (e.g., map decorations that look like the player dot).
+        # If the only detections are in exclusion zones, return None so the caller
+        # knows the player position is not reliably detectable.
         for score_val, is_excluded, cx, cy, r, c in candidates:
             if is_excluded:
-                # Track best excluded as fallback
-                if score_val < best_excluded_score:
-                    best_excluded_score = score_val
-                    best_excluded_cx, best_excluded_cy, best_excluded_r = cx, cy, r
-                    best_excluded_c = c
-            else:
-                # Non-excluded: always preferred
-                if score_val < best_score:
-                    best_score = score_val
-                    best_cx, best_cy, best_r, best_c = cx, cy, r, c
-
-        # Fallback: if no non-excluded candidates found, use best excluded
-        if best_c is None and best_excluded_c is not None:
-            best_cx, best_cy, best_r, best_c = best_excluded_cx, best_excluded_cy, best_excluded_r, best_excluded_c
+                continue  # skip excluded candidates entirely
+            # Non-excluded: always preferred
+            if score_val < best_score:
+                best_score = score_val
+                best_cx, best_cy, best_r, best_c = cx, cy, r, c
 
         # If we found ANY candidate, use it (don't filter out good-enough)
         if best_c is not None:

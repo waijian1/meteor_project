@@ -145,14 +145,16 @@ class MinimapConfig:
     # (close to reference position, good circular shape, expected size).
     # False positives (map decorations, minimap elements) typically score > 0.30+
     # because they're far from the expected position or have wrong shape/size.
-    # Set to a large value (e.g. 999) to disable.
-    score_threshold: float = 0.30
+    # This is just a sanity filter to reject obvious garbage. The main protection
+    # against false positives is the exclusion zone mask blackout and the last_xy
+    # freeze on rejection. Set to a high value (e.g. 999) to disable filtering.
+    score_threshold: float = 0.60
     # --- Score threshold used for the first detection (when last_xy is None) ---
     # On the first frame we don't have a reference position, so we use the center
     # of the minimap which may be far from the player. Use a higher threshold
     # to give the first detection a fair chance. Once last_xy is established,
     # the stricter score_threshold is used for subsequent frames.
-    first_detection_score_threshold: float = 0.60
+    first_detection_score_threshold: float = 0.80
 
 
 @dataclass

@@ -143,10 +143,16 @@ class MinimapConfig:
     # --- Maximum allowed score for a candidate to be accepted as the player dot ---
     # Lower = stricter. The real player dot typically scores around -0.15 to 0.0
     # (close to reference position, good circular shape, expected size).
-    # False positives (map decorations, minimap elements) typically score > 0.20
+    # False positives (map decorations, minimap elements) typically score > 0.30+
     # because they're far from the expected position or have wrong shape/size.
     # Set to a large value (e.g. 999) to disable.
-    score_threshold: float = 0.15
+    score_threshold: float = 0.30
+    # --- Score threshold used for the first detection (when last_xy is None) ---
+    # On the first frame we don't have a reference position, so we use the center
+    # of the minimap which may be far from the player. Use a higher threshold
+    # to give the first detection a fair chance. Once last_xy is established,
+    # the stricter score_threshold is used for subsequent frames.
+    first_detection_score_threshold: float = 0.60
 
 
 @dataclass
@@ -543,11 +549,13 @@ class MinimapTracker:
                 best_cx, best_cy, best_r, best_c = cx, cy, r, c
 
         # Apply score threshold: only accept the candidate if its score is low enough.
-        # The real player dot (close to reference, circular, expected size) scores
-        # around -0.15 to 0.05. False positives (wrong location/shape/size) start
-        # at 0.15+. The threshold also breaks the ping-pong effect where two false
-        # positives alternately update last_xy and pull detection between them.
-        if best_c is not None and best_score <= m.score_threshold:
+        # Use a higher threshold for the first detection (when last_xy is None and
+        # reference is just the centre of the minimap) to ensure the player dot
+        # gets a fair chance. Once last_xy is established, use the stricter threshold.
+        # The real player dot typically scores around -0.15 to 0.15.
+        # False positives typically score > 0.30+.
+        threshold = m.first_detection_score_threshold if self.last_xy is None else m.score_threshold
+        if best_c is not None and best_score <= threshold:
             cx, cy, r = best_cx, best_cy, best_r
         else:
             if CFG.debug:

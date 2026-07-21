@@ -67,7 +67,7 @@ class Keys:
     MW: str = 't'
     MG: str = 'd'
     SB: str = 'j'
-    POTION: str = 'o'
+    # POTION: str = 'o'
     INFINITY: str = 'u'
     LEFT: str = 'left'
     RIGHT: str = 'right'
@@ -82,7 +82,7 @@ class Timers:
     MW: float = 200.0
     MG: float = 180.0
     SB: float = 60.0
-    POTION: float = 480.0  # Potion cooldown
+    # POTION: float = 480.0  # Potion cooldown
     INFINITY: float = 620.0  # Infinity cooldown
     RECAST_MARGIN: float = 10.0  # recast 10s before expiry
 
@@ -750,7 +750,7 @@ class Buffs:
         self.next_mw = now  # cast ASAP at start
         self.next_mg = now
         self.next_sb = now
-        self.next_potion = now
+        # self.next_potion = now
         self.next_infinity = now
 
     def _next_due_with_jitter(self, base_interval: float) -> float:
@@ -767,8 +767,8 @@ class Buffs:
             self.next_mw = self._next_due_with_jitter(self.t.MW)
         elif k == 'SB':
             self.next_sb = self._next_due_with_jitter(self.t.SB)
-        elif k == 'POTION':
-            self.next_potion = self._next_due_with_jitter(self.t.POTION)
+        # elif k == 'POTION':
+        #     self.next_potion = self._next_due_with_jitter(self.t.POTION)
         elif k == 'INFINITY':
             self.next_infinity = self._next_due_with_jitter(self.t.INFINITY)
 
@@ -807,14 +807,14 @@ class Buffs:
             time.sleep(CFG.buff_chain_gap)
 
         now = time.time()
-        if now >= self.next_potion:
-            time.sleep(CFG.buff_precast_pause_secs)
-            pdi.keyDown(self.k.POTION)
-            time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
-            pdi.keyUp(self.k.POTION)
-            self.next_potion = self._next_due_with_jitter(self.t.POTION)
-            did = True
-            time.sleep(CFG.buff_chain_gap)
+        # if now >= self.next_potion:
+        #     time.sleep(CFG.buff_precast_pause_secs)
+        #     pdi.keyDown(self.k.POTION)
+        #     time.sleep(rand(0.10, 0.14))   # longer hold -> more reliable registration
+        #     pdi.keyUp(self.k.POTION)
+        #     self.next_potion = self._next_due_with_jitter(self.t.POTION)
+        #     did = True
+        #     time.sleep(CFG.buff_chain_gap)
         
         if now >= self.next_infinity:
             time.sleep(CFG.buff_precast_pause_secs)
